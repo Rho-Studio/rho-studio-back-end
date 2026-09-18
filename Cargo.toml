@@ -2,21 +2,81 @@
 name = "rho-studio-back-end"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"          # edition 2024 requires Rust ≥ 1.85
+
+# Binary name: keep as you set it (used for the produced executable)
+[[bin]]
+name = "fitness-backend"
+path = "src/main.rs"
 
 [dependencies]
-axum = "0.7"
+# Web
+axum = { version = "0.7", features = ["macros", "multipart"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["trace", "cors", "compression-gzip", "limit"] }
+
+# Async
 tokio = { version = "1", features = ["full"] }
-tracing = "0.1"
-tracing-subscriber = "0.3"
-sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono", "json"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Database
+sqlx = { version = "0.8.6", features = [
+    "runtime-tokio-native-tls",
+    "postgres",
+    "uuid",
+    "chrono",
+    "json",
+    "macros",
+    "migrate"
+] }
+
+# Cache
+redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
+
+# Object storage
+rust-s3 = { version = "0.34", default-features = false, features = ["tokio-rustls-tls"] }
+aws-creds = "0.36"
+
+# Config
 config = "0.14"
 dotenvy = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Auth (wired now, used in Phase 2)
 jsonwebtoken = "9"
 argon2 = "0.5"
+rand = "0.8"
+
+# Validation
 validator = { version = "0.18", features = ["derive"] }
-redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
-rust-s3 = { version = "0.34", features = ["tokio-rustls-tls"] }
+
+# Errors
+thiserror = "1"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# IDs / time / bytes
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+bytes = "1"
+mime = "0.3"
+
+# OpenAPI (wired now, used later)
 utoipa = { version = "4", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "4", features = ["axum"] }
+
+[dev-dependencies]
+testcontainers = "0.15"
+reqwest = { version = "0.11", features = ["json", "multipart"] }
+http-body-util = "0.1"
+tower = { version = "0.4", features = ["util"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
