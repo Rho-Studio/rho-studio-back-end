@@ -7,7 +7,7 @@ use s3::region::Region;
 use std::sync::Arc;
 
 pub struct S3Storage {
-    bucket: Arc<Bucket>,           // ← fixed
+    bucket: Arc<Bucket>, // ← fixed
     cdn_base: Option<String>,
     endpoint: String,
 }

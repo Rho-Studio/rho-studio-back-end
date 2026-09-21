@@ -1,0 +1,11 @@
+.git
+.github
+.env
+.env.*
+target
+.vscode
+scripts
+walktrough.md
+devPlan.md
+note.txt
+.DS_Store

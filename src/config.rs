@@ -95,7 +95,13 @@ impl AppConfig {
             gif_cdn_url: std::env::var("GIF_CDN_URL").ok().filter(|s| !s.is_empty()),
         };
 
-        Ok(Self { app, database, redis, jwt, storage })
+        Ok(Self {
+            app,
+            database,
+            redis,
+            jwt,
+            storage,
+        })
     }
 
     pub fn is_production(&self) -> bool {

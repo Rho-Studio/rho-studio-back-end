@@ -19,6 +19,11 @@ impl AppState {
         storage: Arc<dyn ObjectStorage>,
         config: Arc<AppConfig>,
     ) -> Self {
-        Self { pool, redis, storage, config }
+        Self {
+            pool,
+            redis,
+            storage,
+            config,
+        }
     }
 }

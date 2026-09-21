@@ -37,6 +37,30 @@ services:
     volumes:
       - minio_data:/data
 
+  backend:
+    build:
+      context: .
+      dockerfile: dockerfile
+    env_file:
+      - .env
+    environment:
+      APP_ENV: development
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8080
+      DATABASE_URL: postgres://rho_studio:rho_studio@postgres:5432/rho_studio
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      GIF_CDN_URL: http://localhost:9000/fitness-gifs
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+
 volumes:
   postgres_data:
   minio_data:

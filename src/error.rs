@@ -1,7 +1,7 @@
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde_json::json;
 use thiserror::Error;
@@ -42,31 +42,31 @@ pub enum AppError {
 impl AppError {
     pub fn status(&self) -> StatusCode {
         match self {
-            AppError::NotFound(_)     => StatusCode::NOT_FOUND,
-            AppError::BadRequest(_)   => StatusCode::BAD_REQUEST,
+            AppError::NotFound(_) => StatusCode::NOT_FOUND,
+            AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
-            AppError::Forbidden(_)    => StatusCode::FORBIDDEN,
-            AppError::Conflict(_)     => StatusCode::CONFLICT,
-            AppError::Validation(_)   => StatusCode::UNPROCESSABLE_ENTITY,
+            AppError::Forbidden(_) => StatusCode::FORBIDDEN,
+            AppError::Conflict(_) => StatusCode::CONFLICT,
+            AppError::Validation(_) => StatusCode::UNPROCESSABLE_ENTITY,
             AppError::Storage(_)
             | AppError::Database(_)
             | AppError::Redis(_)
-            | AppError::Internal(_)   => StatusCode::INTERNAL_SERVER_ERROR,
+            | AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
     pub fn code(&self) -> &'static str {
         match self {
-            AppError::NotFound(_)     => "NOT_FOUND",
-            AppError::BadRequest(_)   => "BAD_REQUEST",
+            AppError::NotFound(_) => "NOT_FOUND",
+            AppError::BadRequest(_) => "BAD_REQUEST",
             AppError::Unauthorized(_) => "UNAUTHORIZED",
-            AppError::Forbidden(_)    => "FORBIDDEN",
-            AppError::Conflict(_)     => "CONFLICT",
-            AppError::Validation(_)   => "VALIDATION_FAILED",
-            AppError::Storage(_)      => "STORAGE_ERROR",
-            AppError::Database(_)     => "DATABASE_ERROR",
-            AppError::Redis(_)        => "CACHE_ERROR",
-            AppError::Internal(_)     => "INTERNAL_ERROR",
+            AppError::Forbidden(_) => "FORBIDDEN",
+            AppError::Conflict(_) => "CONFLICT",
+            AppError::Validation(_) => "VALIDATION_FAILED",
+            AppError::Storage(_) => "STORAGE_ERROR",
+            AppError::Database(_) => "DATABASE_ERROR",
+            AppError::Redis(_) => "CACHE_ERROR",
+            AppError::Internal(_) => "INTERNAL_ERROR",
         }
     }
 }

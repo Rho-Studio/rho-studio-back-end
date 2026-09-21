@@ -8,8 +8,8 @@ mod storage;
 use crate::config::AppConfig;
 use crate::state::AppState;
 use crate::storage::{ObjectStorage, S3Storage};
-use axum::routing::get;
 use axum::Router;
+use axum::routing::get;
 use redis::aio::ConnectionManager;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,7 +19,7 @@ use tower_http::{
     limit::RequestBodyLimitLayer,
     trace::TraceLayer,
 };
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -80,6 +80,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(routes::health::health))
         .route("/health/ready", get(routes::health::health_ready))
         .route("/version", get(routes::health::version))
+        .route("/api/v1/exercises", get(routes::exercises::get_exercises))
+        .route(
+            "/api/v1/routines/demo",
+            get(routes::routines::get_demo_routine),
+        )
+        .route("/api/v1/routines/:id", get(routes::routines::get_routine))
         .layer(trace)
         .layer(cors)
         .layer(CompressionLayer::new())

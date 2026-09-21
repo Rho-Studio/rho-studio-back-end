@@ -4,6 +4,10 @@ pub use s3_storage::S3Storage;
 use async_trait::async_trait;
 use thiserror::Error;
 
+#[expect(
+    dead_code,
+    reason = "storage errors are used as storage operations are added"
+)]
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("object not found: {0}")]
@@ -25,6 +29,10 @@ pub enum StorageError {
     Backend(String),
 }
 
+#[expect(
+    dead_code,
+    reason = "storage operations are exposed for upcoming routes"
+)]
 #[async_trait]
 pub trait ObjectStorage: Send + Sync {
     async fn put_object(
@@ -40,9 +48,6 @@ pub trait ObjectStorage: Send + Sync {
 
     fn public_url(&self, key: &str) -> String;
 
-    async fn presigned_put_url(
-        &self,
-        key: &str,
-        expires_secs: u32,
-    ) -> Result<String, StorageError>;
+    async fn presigned_put_url(&self, key: &str, expires_secs: u32)
+    -> Result<String, StorageError>;
 }

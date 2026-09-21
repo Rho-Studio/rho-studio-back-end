@@ -2,7 +2,7 @@
 name = "rho-studio-back-end"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"          # edition 2024 requires Rust ≥ 1.85
+rust-version = "1.88"
 
 # Binary name: keep as you set it (used for the produced executable)
 [[bin]]

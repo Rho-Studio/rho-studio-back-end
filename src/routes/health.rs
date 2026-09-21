@@ -1,7 +1,7 @@
 use crate::state::AppState;
-use axum::extract::State;
 use axum::Json;
-use serde_json::{json, Value};
+use axum::extract::State;
+use serde_json::{Value, json};
 
 pub async fn health() -> Json<Value> {
     Json(json!({
@@ -23,7 +23,11 @@ pub async fn health_ready(State(state): State<AppState>) -> Json<Value> {
 
     let storage_ok = state.storage.public_url("__ping__").starts_with("http");
 
-    let status = if db_ok && redis_ok && storage_ok { "ok" } else { "degraded" };
+    let status = if db_ok && redis_ok && storage_ok {
+        "ok"
+    } else {
+        "degraded"
+    };
 
     Json(json!({
         "status": status,
