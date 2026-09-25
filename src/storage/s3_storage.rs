@@ -2,14 +2,19 @@ use super::{ObjectStorage, StorageError};
 use async_trait::async_trait;
 use bytes::Bytes;
 use s3::bucket::Bucket;
+use s3::bucket_ops::BucketConfiguration;
 use s3::creds::Credentials;
 use s3::region::Region;
 use std::sync::Arc;
 
 pub struct S3Storage {
-    bucket: Arc<Bucket>, // ← fixed
+    bucket: Arc<Bucket>,
     cdn_base: Option<String>,
     endpoint: String,
+    access_key_id: String,
+    secret_access_key: String,
+    bucket_name: String,
+    region: String,
 }
 
 impl S3Storage {
@@ -35,7 +40,7 @@ impl S3Storage {
         )
         .map_err(|e| StorageError::Backend(e.to_string()))?;
 
-        let bucket = Bucket::new(bucket_name, region, creds)
+        let bucket = Bucket::new(bucket_name, region.clone(), creds)
             .map_err(|e| StorageError::Backend(e.to_string()))?
             .with_path_style();
 
@@ -43,7 +48,44 @@ impl S3Storage {
             bucket: Arc::new(bucket),
             cdn_base: cdn_base.map(|s| s.trim_end_matches('/').to_string()),
             endpoint: endpoint.trim_end_matches('/').to_string(),
+            access_key_id: access_key_id.to_string(),
+            secret_access_key: secret_access_key.to_string(),
+            bucket_name: bucket_name.to_string(),
+            region: region.to_string(),
         })
+    }
+
+    pub async fn ensure_bucket(&self) -> Result<(), StorageError> {
+        let region = Region::Custom {
+            region: self.region.clone(),
+            endpoint: self.endpoint.clone(),
+        };
+        let credentials = Credentials::new(
+            Some(&self.access_key_id),
+            Some(&self.secret_access_key),
+            None,
+            None,
+            None,
+        )
+        .map_err(|e| StorageError::Backend(e.to_string()))?;
+
+        let response = Bucket::create_with_path_style(
+            &self.bucket_name,
+            region,
+            credentials,
+            BucketConfiguration::default(),
+        )
+        .await
+        .map_err(|e| StorageError::Backend(e.to_string()))?;
+
+        if (200..300).contains(&response.response_code) || response.response_code == 409 {
+            Ok(())
+        } else {
+            Err(StorageError::Backend(format!(
+                "bucket initialization returned status {}",
+                response.response_code
+            )))
+        }
     }
 }
 

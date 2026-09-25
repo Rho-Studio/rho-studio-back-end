@@ -2,8 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [1-rust-api-rest]
+    branches: [5-fintech-backend]
   pull_request:
+    branches: [main , dev]
 
 permissions:
   contents: read

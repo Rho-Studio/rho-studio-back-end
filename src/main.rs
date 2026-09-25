@@ -49,14 +49,19 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("connected to redis");
 
     // Storage
-    let storage: Arc<dyn ObjectStorage> = Arc::new(S3Storage::new(
+    let storage_backend = S3Storage::new(
         &config.storage.endpoint,
         &config.storage.access_key_id,
         &config.storage.secret_access_key,
         &config.storage.bucket,
         &config.storage.region,
         config.storage.gif_cdn_url.clone(),
-    )?);
+    )?;
+    if config.storage.auto_create_bucket {
+        storage_backend.ensure_bucket().await?;
+        tracing::info!(bucket = %config.storage.bucket, "storage bucket initialized");
+    }
+    let storage: Arc<dyn ObjectStorage> = Arc::new(storage_backend);
     tracing::info!(
         backend = %config.storage.backend,
         bucket  = %config.storage.bucket,

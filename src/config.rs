@@ -37,6 +37,7 @@ pub struct JwtSection {
 #[derive(Debug, Clone, Deserialize)]
 pub struct StorageSection {
     pub backend: String,
+    pub auto_create_bucket: bool,
     pub endpoint: String,
     pub access_key_id: String,
     pub secret_access_key: String,
@@ -82,7 +83,10 @@ impl AppConfig {
         };
 
         let storage = StorageSection {
-            backend: std::env::var("STORAGE_BACKEND").unwrap_or_else(|_| "minio".into()),
+            backend: std::env::var("STORAGE_BACKEND").unwrap_or_else(|_| "s3".into()),
+            auto_create_bucket: std::env::var("STORAGE_AUTO_CREATE_BUCKET")
+                .unwrap_or_else(|_| "false".into())
+                .parse()?,
             endpoint: std::env::var("S3_ENDPOINT")
                 .map_err(|_| anyhow::anyhow!("S3_ENDPOINT is required"))?,
             access_key_id: std::env::var("S3_ACCESS_KEY_ID")

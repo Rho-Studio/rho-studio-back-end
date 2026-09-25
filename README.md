@@ -11,7 +11,7 @@ Requirements:
 - `curl`
 - `jq`
 
-Start Postgres, Redis, MinIO, and the backend:
+Start Postgres, Redis, RustFS, and the backend:
 
 ```bash
 docker compose up -d --build
@@ -57,8 +57,12 @@ The response is a JSON array. Each exercise has a short public dataset ID:
 }
 ```
 
-The local dataset contains 1,324 exercises. GIF URLs use the local MinIO
+The local dataset contains 1,324 exercises. GIF URLs use the local RustFS
 service on port `9000`.
+
+The development configuration creates the `fitness-gifs` bucket on startup.
+Production deployments must provision the bucket through infrastructure
+automation and leave `STORAGE_AUTO_CREATE_BUCKET=false`.
 
 ## Routine Endpoint
 
@@ -89,8 +93,8 @@ Run the routine and catalog integration tests:
 | Exercise API | `http://127.0.0.1:8080/api/v1/exercises` |
 | Postgres | `localhost:5432` |
 | Redis | `localhost:6379` |
-| MinIO API | `http://localhost:9000` |
-| MinIO console | `http://localhost:9001` |
+| RustFS S3 API | `http://localhost:9000` |
+| RustFS console | `http://localhost:9001` |
 
 Stop the services:
 
