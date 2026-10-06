@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: rho_studio
       POSTGRES_DB: rho_studio
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -18,12 +18,14 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
+    volumes:
+      - redis_data:/data
 
   rustfs:
     image: rustfs/rustfs:1.0.0
@@ -35,8 +37,8 @@ services:
       RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY_ID:?S3_ACCESS_KEY_ID is required}
       RUSTFS_SECRET_KEY: ${S3_SECRET_ACCESS_KEY:?S3_SECRET_ACCESS_KEY is required}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000" 
+      - "127.0.0.1:9001:9001"
     volumes:
       - rustfs_data:/data
     healthcheck:
@@ -60,7 +62,6 @@ services:
       STORAGE_BACKEND: rustfs
       STORAGE_AUTO_CREATE_BUCKET: "true"
       S3_ENDPOINT: http://rustfs:9000
-      GIF_CDN_URL: http://localhost:9000/fitness-gifs
     ports:
       - "8080:8080"
     depends_on:
@@ -74,3 +75,4 @@ services:
 volumes:
   postgres_data:
   rustfs_data:
+  redis_data:

@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 pub struct S3Storage {
     bucket: Arc<Bucket>,
-    cdn_base: Option<String>,
     endpoint: String,
     access_key_id: String,
     secret_access_key: String,
@@ -24,11 +23,13 @@ impl S3Storage {
         secret_access_key: &str,
         bucket_name: &str,
         region: &str,
-        cdn_base: Option<String>,
     ) -> Result<Self, StorageError> {
+        let region_name = region.to_string();
+        let endpoint = endpoint.trim_end_matches('/').to_string();
+
         let region = Region::Custom {
-            region: region.to_string(),
-            endpoint: endpoint.to_string(),
+            region: region_name.clone(),
+            endpoint: endpoint.clone(),
         };
 
         let creds = Credentials::new(
@@ -40,18 +41,17 @@ impl S3Storage {
         )
         .map_err(|e| StorageError::Backend(e.to_string()))?;
 
-        let bucket = Bucket::new(bucket_name, region.clone(), creds)
+        let bucket = Bucket::new(bucket_name, region, creds)
             .map_err(|e| StorageError::Backend(e.to_string()))?
             .with_path_style();
 
         Ok(Self {
             bucket: Arc::new(bucket),
-            cdn_base: cdn_base.map(|s| s.trim_end_matches('/').to_string()),
-            endpoint: endpoint.trim_end_matches('/').to_string(),
+            endpoint,
             access_key_id: access_key_id.to_string(),
             secret_access_key: secret_access_key.to_string(),
             bucket_name: bucket_name.to_string(),
-            region: region.to_string(),
+            region: region_name,
         })
     }
 
@@ -151,15 +151,17 @@ impl ObjectStorage for S3Storage {
         }
     }
 
-    fn public_url(&self, key: &str) -> String {
-        let key = key.trim_start_matches('/');
-        match &self.cdn_base {
-            Some(base) => format!("{}/{}", base, key),
-            None => {
-                let bucket = self.bucket.name();
-                format!("{}/{}/{}", self.endpoint, bucket, key)
-            }
-        }
+    async fn presigned_get_url(
+        &self,
+        key: &str,
+        expires_secs: u32,
+    ) -> Result<String, StorageError> {
+        let url = self
+            .bucket
+            .presign_get(key, expires_secs, None)
+            .await
+            .map_err(|e| StorageError::PresignFailed(e.to_string()))?;
+        Ok(url)
     }
 
     async fn presigned_put_url(
@@ -173,5 +175,19 @@ impl ObjectStorage for S3Storage {
             .await
             .map_err(|e| StorageError::PresignFailed(e.to_string()))?;
         Ok(url)
+    }
+
+    async fn health_check(&self) -> Result<(), StorageError> {
+        let exists = self
+            .bucket
+            .exists()
+            .await
+            .map_err(|e| StorageError::Backend(e.to_string()))?;
+
+        if exists {
+            Ok(())
+        } else {
+            Err(StorageError::Backend("bucket does not exist".to_string()))
+        }
     }
 }

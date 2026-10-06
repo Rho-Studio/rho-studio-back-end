@@ -1,3 +1,3 @@
-pub mod exercises;
+pub mod auth;
+pub mod consents;
 pub mod health;
-pub mod routines;

@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 pub async fn health() -> Json<Value> {
     Json(json!({
         "status": "ok",
-        "service": "rho-studio-back-end",
+        "service": "rho-studio-fintech",
         "version": env!("CARGO_PKG_VERSION"),
     }))
 }
@@ -21,7 +21,7 @@ pub async fn health_ready(State(state): State<AppState>) -> Json<Value> {
         .map(|r| r == "PONG")
         .unwrap_or(false);
 
-    let storage_ok = state.storage.public_url("__ping__").starts_with("http");
+    let storage_ok = state.storage.health_check().await.is_ok();
 
     let status = if db_ok && redis_ok && storage_ok {
         "ok"

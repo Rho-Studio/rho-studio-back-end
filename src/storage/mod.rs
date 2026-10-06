@@ -46,8 +46,11 @@ pub trait ObjectStorage: Send + Sync {
 
     async fn delete_object(&self, key: &str) -> Result<(), StorageError>;
 
-    fn public_url(&self, key: &str) -> String;
+    async fn presigned_get_url(&self, key: &str, expires_secs: u32)
+    -> Result<String, StorageError>;
 
     async fn presigned_put_url(&self, key: &str, expires_secs: u32)
     -> Result<String, StorageError>;
+
+    async fn health_check(&self) -> Result<(), StorageError>;
 }
