@@ -1,0 +1,165 @@
+%%{init: {"theme":"Redux Dark","themeVariables":{"background":"#888282","mainBkg":"#FFFFFF","primaryColor":"#D3D3D3","primaryTextColor":"#333333","primaryBorderColor":"#D32F2F","lineColor":"#D32F2F","secondaryColor":"#4A4A4A","secondaryTextColor":"#FFFFFF","secondaryBorderColor":"#D32F2F","tertiaryColor":"#333333","tertiaryTextColor":"#FFFFFF","tertiaryBorderColor":"#D32F2F","textColor":"#333333"}}}%%
+erDiagram
+    %% Auth/session and the current consent registry use users, not customers.
+    %% Legacy consent_record table removed in migration 5 cleanup; 
+    %% consent evidence now lives in customer_consent_events.
+    USER ||--o{ REFRESH_TOKEN : owns
+    USER ||--o{ VERIFICATION_CASE : has
+    USER ||--o{ CONSENT_EVENT : records
+    CONSENT_NOTICE ||--o{ CONSENT_EVENT : referenced_by
+    USER o|--o| CUSTOMER : financial_profile
+
+    CUSTOMER ||--o{ ACCOUNT : owns
+    CUSTOMER ||--o{ LOAN_APPLICATION : submits
+    CUSTOMER ||--o{ LOAN : borrows
+    CUSTOMER ||--o{ KYC_VERIFICATION : has
+    CUSTOMER ||--o{ ARCO_REQUEST : submits
+    CUSTOMER ||--o{ REGISTERED_DEVICE : registers
+    CUSTOMER ||--o{ DEVICE_TOKEN : receives
+
+    ACCOUNT ||--o{ ACCOUNT_HOLD : has
+    ACCOUNT o|--o{ LOAN : disburses_to
+    LOAN ||--o{ AMORTIZATION_SCHEDULE : schedules
+    ACCOUNT ||--o{ SPEI_TRANSFER : originates
+    SPEI_TRANSFER o|--o{ CODI_MESSAGE : may_link
+    ACCOUNT ||--o{ DIMO_REGISTRATION : links
+    CUSTOMER ||--o{ DIMO_REGISTRATION : registers
+    ACCOUNT ||--o{ TRANSFER_LIMIT : tracks
+    ARCO_REQUEST ||--o{ DATA_ANONYMIZATION_LOG : may_produce
+
+    USER {
+        uuid id PK
+        string email
+        string display_name
+        string password_hash
+        boolean is_active
+        boolean email_verified
+    }
+    REFRESH_TOKEN {
+        uuid id PK
+        uuid user_id FK
+        string token_hash
+        uuid token_family_id
+        timestamp expires_at
+        timestamp revoked_at
+    }
+    VERIFICATION_CASE {
+        uuid id PK
+        uuid user_id FK
+        string status
+    }
+    CONSENT_NOTICE {
+        uuid id PK
+        string purpose_code
+        string locale
+        string version
+        string status
+    }
+    CONSENT_EVENT {
+        uuid id PK
+        uuid user_id FK
+        uuid notice_id FK
+        string event_type
+        timestamp recorded_at
+    }
+    CUSTOMER {
+        uuid id PK
+        uuid user_id FK, UK
+        string rfc UK
+        string curp UK
+        string email UK
+    }
+    ACCOUNT {
+        uuid id PK
+        uuid customer_id FK
+        string clabe UK
+        decimal balance
+        decimal held_amount
+        string status
+    }
+    ACCOUNT_HOLD {
+        uuid id PK
+        uuid account_id FK
+        decimal amount
+        timestamp released_at
+    }
+    LOAN_APPLICATION {
+        uuid id PK
+        uuid customer_id FK
+        decimal requested_amount
+        string status
+    }
+    LOAN {
+        uuid id PK
+        uuid customer_id FK
+        uuid disbursement_account_id FK
+        decimal principal_amount
+        decimal outstanding_principal
+        string status
+    }
+    AMORTIZATION_SCHEDULE {
+        uuid id PK
+        uuid loan_id FK
+        int installment_number
+        date due_date
+        decimal total_payment
+    }
+    SPEI_TRANSFER {
+        uuid id PK
+        uuid origin_account_id FK
+        string destination_clabe
+        decimal amount_mxn
+        string status
+        uuid idempotency_key UK
+    }
+    CODI_MESSAGE {
+        uuid id PK
+        uuid spei_transfer_id FK
+        decimal amount_mxn
+        string status
+    }
+    DIMO_REGISTRATION {
+        uuid id PK
+        uuid customer_id FK
+        uuid account_id FK
+        string phone_number
+        string clabe
+    }
+    TRANSFER_LIMIT {
+        uuid id PK
+        uuid account_id FK
+        string period_type
+        decimal total_transferred
+    }
+    KYC_VERIFICATION {
+        uuid id PK
+        uuid customer_id FK
+        string level
+        string status
+    }
+    ARCO_REQUEST {
+        uuid id PK
+        uuid customer_id FK
+        string request_type
+        string status
+    }
+    DATA_ANONYMIZATION_LOG {
+        uuid id PK
+        uuid arco_request_id FK
+        timestamp anonymized_at
+    }
+    REGISTERED_DEVICE {
+        uuid id PK
+        uuid customer_id FK
+        string platform
+        string status
+    }
+    DEVICE_TOKEN {
+        uuid id PK
+        uuid customer_id FK
+        uuid device_id
+        string platform
+    }
+
+    classDef dataNode fill:#D3D3D3,stroke:#D32F2F,color:#000000
+    class USER,CUSTOMER,ACCOUNT,ACCOUNT_HOLD,LOAN_APPLICATION,LOAN,AMORTIZATION_SCHEDULE,SPEI_TRANSFER,CODI_MESSAGE,DIMO_REGISTRATION,TRANSFER_LIMIT,REFRESH_TOKEN,CONSENT_NOTICE,CONSENT_EVENT,VERIFICATION_CASE,KYC_VERIFICATION,ARCO_REQUEST,DATA_ANONYMIZATION_LOG,REGISTERED_DEVICE,DEVICE_TOKEN dataNode
