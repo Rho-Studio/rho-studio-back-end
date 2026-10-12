@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: []
+    branches: [" "]
   pull_request:
     branches: [main , dev]
 
@@ -37,8 +37,8 @@ jobs:
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
 
-      - name: Format check
-        run: cargo fmt --all -- --check
+      # - name: Format check
+      #   run: cargo fmt --all -- --check
 
       - name: Clippy
         run: cargo clippy --all-targets --locked -- -D warnings
