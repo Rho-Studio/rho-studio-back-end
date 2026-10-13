@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [" "]
+    branches: ["5-fintech-backend"]
   pull_request:
     branches: [main , dev]
 
