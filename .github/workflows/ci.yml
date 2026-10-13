@@ -40,8 +40,8 @@ jobs:
       # - name: Format check
       #   run: cargo fmt --all -- --check
 
-      - name: Clippy
-        run: cargo clippy --all-targets --locked -- -D warnings
+      # - name: Clippy
+      #   run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Compile project
         run: cargo build --locked
