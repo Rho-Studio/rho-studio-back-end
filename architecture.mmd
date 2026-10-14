@@ -1,0 +1,79 @@
+%%{init: {"theme":"base","themeVariables":{"background":"#FFFFFF","mainBkg":"#FFFFFF","textColor":"#333333","lineColor":"#D32F2F"}}}%%
+flowchart LR
+	mobile[Mobile API] --> auth[Authentication and Authorization]
+	webhooks[Verified Webhook Ingress] --> inbox[Webhook Inbox and Deduplication]
+
+	subgraph services[Application Services]
+		onboarding[Customer, Consent, KYC]
+		lending[Application and Underwriting]
+		contracts[Offer and Contract]
+		servicing[Disbursement, Servicing, Collections]
+	end
+
+	auth --> onboarding
+	auth --> lending
+	auth --> contracts
+	auth --> servicing
+	inbox --> servicing
+
+	subgraph financial_core[Financial Control Plane]
+		idem[Idempotency]
+		ledger[Immutable Ledger]
+		audit[Audit and Compliance Evidence]
+		outbox[Transactional Outbox]
+		recon[Reconciliation]
+	end
+
+	onboarding --> audit
+	lending --> audit
+	contracts --> audit
+	servicing --> idem
+	servicing --> ledger
+	servicing --> audit
+	servicing --> outbox
+	recon --> ledger
+
+	subgraph adapters[Replaceable Provider Adapters]
+		kyc[KYC and Credit]
+		bank[Bank and Payment Rails]
+		sign[Signature and Documents]
+		notify[Push Notifications]
+	end
+
+	outbox --> kyc
+	outbox --> bank
+	outbox --> sign
+	outbox --> notify
+
+	subgraph stores[Persistence]
+		pg[(PostgreSQL: authoritative state)]
+		s3[(Private Object Storage)]
+		redis[(Redis: disposable acceleration)]
+	end
+
+	onboarding --> pg
+	lending --> pg
+	contracts --> pg
+	servicing --> pg
+	idem --> pg
+	ledger --> pg
+	audit --> pg
+	outbox --> pg
+	recon --> pg
+	onboarding --> s3
+	contracts --> s3
+	auth -.-> redis
+
+	linkStyle default stroke:#D32F2F,stroke-width:2px
+	classDef rhoRed fill:#D32F2F,stroke:#FFFFFF,color:#FFFFFF
+	classDef rhoFeature fill:#4A4A4A,stroke:#D32F2F,color:#FFFFFF
+	classDef rhoCore fill:#333333,stroke:#D32F2F,color:#FFFFFF
+	classDef rhoData fill:#D3D3D3,stroke:#D32F2F,color:#333333
+	class mobile rhoFeature
+	class webhooks,idem,ledger,outbox rhoRed
+	class auth,inbox,onboarding,lending,contracts,servicing,audit,recon,kyc,bank,sign,notify rhoCore
+	class pg,s3,redis rhoData
+	style services fill:#D3D3D3,stroke:#D32F2F,color:#333333
+	style financial_core fill:#D3D3D3,stroke:#D32F2F,color:#333333
+	style adapters fill:#D3D3D3,stroke:#D32F2F,color:#333333
+	style stores fill:#D3D3D3,stroke:#D32F2F,color:#333333
