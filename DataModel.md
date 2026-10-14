@@ -6,6 +6,8 @@
 covered by container-backed integration tests. Account, loan, transfer, and
 repayment API workflows are not implemented.
 
+> **Consent model**: Consent is stored in two places with two different responsibilities. ``consent_notices`` holds versioned notice content. ``customer_consent_events`` is the append-only audit log of every grant and withdrawal. ``customer_consents`` is a state projection derived from the event log for fast reads and first-class customer-scoped queries. This dual-table approach is the fintech best practice: the event log satisfies LFPDPPP auditability and the projection satisfies the customer-scoped ERD without compromising either. See "Consent registry design" below.
+
 ## At a Glance
 
 | Area | Main tables | What they represent | Runtime |
@@ -30,10 +32,10 @@ repayment API workflows are not implemented.
 The complete model includes identity, consent, KYC, privacy, account, loan,
 and payment tables. Entities use the Rho `dataNode` style: light-gray fill,
 black text, and red borders. The same diagram is available as a standalone
-[Mermaid source file](datamaodel.mmd).
+[Mermaid source file](./datamodel.mmd).
 
 ```mermaid
-%%{init: {"theme":"Redux Dark","themeVariables":{"background":"#888282","mainBkg":"#FFFFFF","primaryColor":"#D3D3D3","primaryTextColor":"#333333","primaryBorderColor":"#D32F2F","lineColor":"#D32F2F","secondaryColor":"#4A4A4A","secondaryTextColor":"#FFFFFF","secondaryBorderColor":"#D32F2F","tertiaryColor":"#333333","tertiaryTextColor":"#FFFFFF","tertiaryBorderColor":"#D32F2F","textColor":"#333333"}}}%%
+%%{init: {"theme":"base","themeVariables":{"background":"#FFFFFF","mainBkg":"#FFFFFF","primaryColor":"#333333","primaryTextColor":"#FFFFFF","primaryBorderColor":"#D32F2F","lineColor":"#D32F2F","secondaryColor":"#4A4A4A","secondaryTextColor":"#FFFFFF","secondaryBorderColor":"#D32F2F","tertiaryColor":"#4A4A4A","tertiaryTextColor":"#333333","tertiaryBorderColor":"#D32F2F","textColor":"#333333"}}}%%
 erDiagram
     %% Auth/session and the current consent registry use users, not customers.
     %% Legacy consent_record table removed in migration 5 cleanup; 
@@ -42,7 +44,7 @@ erDiagram
     USER ||--o{ VERIFICATION_CASE : has
     USER ||--o{ CONSENT_EVENT : records
     CONSENT_NOTICE ||--o{ CONSENT_EVENT : referenced_by
-    USER o|--o| CUSTOMER : financial_profile
+    USER o|--o| CUSTOMER : is
 
     CUSTOMER ||--o{ ACCOUNT : owns
     CUSTOMER ||--o{ LOAN_APPLICATION : submits
@@ -213,7 +215,7 @@ erDiagram
   users ||--o{ refresh_tokens : owns
   users ||--o{ customer_verification_cases : has
   users ||--o{ customer_consent_events : records
-  users o|--o| customers : financial_profile
+  users o|--o| customers : is
   consent_notices ||--o{ customer_consent_events : referenced_by
 
   users {
@@ -271,7 +273,7 @@ within one login session — the reuse-detection model lives there.
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"background":"#FFFFFF","mainBkg":"#FFFFFF","primaryColor":"#333333","primaryTextColor":"#FFFFFF","primaryBorderColor":"#D32F2F","lineColor":"#D32F2F","secondaryColor":"#4A4A4A","secondaryTextColor":"#FFFFFF","secondaryBorderColor":"#D32F2F","tertiaryColor":"#D3D3D3","tertiaryTextColor":"#333333","tertiaryBorderColor":"#D32F2F","textColor":"#333333"}}}%%
 erDiagram
-  users o|--o| customers : financial_profile
+  users o|--o| customers : is
   customers ||--o{ accounts : owns
   customers ||--o{ loan_applications : submits
   customers ||--o{ loans : borrows
@@ -1103,7 +1105,7 @@ Tracked issues, grouped by area. Each entry names the migration that introduced 
 | Identity and Sessions | 5 | P0 (`email_verified` shortcut, JWT rotation) |
 | Authentication Hygiene | 6 | P0 (password policy, reset flow) |
 | Onboarding | 2 | P1 (route not registered) |
-| Consent / KYC | 3 | P2 (informational) |
+| Consent | 5 | 	P1 (user-scoped vs customer-scoped) |
 | Identity ↔ Customer link | 2 | P1 (unlinked `user_id`) |
 | Balance safety | 2 | P0 (no hold-fit invariant) |
 | Lending | 1 | P1 (lifecycle not modeled) |
@@ -1155,15 +1157,13 @@ Tracked issues, grouped by area. Each entry names the migration that introduced 
 
 ---
 
-### Consent / KYC
+### Consent 
 
-- **P2 — `consent_records` is gone; the current model is user-scoped.** Migration 5's legacy `consent_records` table and the `consent_method` enum were removed in the migration-5 cleanup. Migration 11's `consent_notices` + `customer_consent_events` is authoritative. The consent API writes only to `customer_consent_events`. **Fix:** none — this is a state note. Any documentation or tooling still referencing `consent_records` must be updated.
-
-- **P2 — No notice seeder.** `consent_notices` must be populated manually or by an admin tool. There is no seed migration, no CLI command, and no admin endpoint. A fresh deployment has zero notices and the consent flow returns empty. **Fix:** add a seed migration for the initial privacy / KYC notices, or an admin endpoint gated by a service-account role.
-
-- **P2 — No consent-event deduplication at the DB level.** The append-only table accepts a `granted` event followed immediately by another `granted`. The handler (`routes/consents.rs`) is expected to detect and no-op identical events, but nothing in the schema enforces it. **Fix:** either add a unique constraint on `(user_id, notice_id, event_type, recorded_at)` (impractical given timestamps), or add a `CHECK` against the last event via a trigger.
-
-- **P2 — No notification on new notice version.** When a notice is retired and a replacement published, users with prior consent aren't re-prompted. LFPDPPP generally requires re-consent when the notice materially changes. **Fix:** add a compliance job that flags users whose latest consent references a retired notice; prompt on next app open.
+- **P1 — Consent is user-scoped; target ERD shows customer-scoped**: The target ERD in architecture.md shows ``CUSTOMER ||--o{ CONSENT : grants``. The current schema stores consent against ``users`` via ``customer_consent_events.user_id``. Resolving a customer's consent state requires traversing ``users.id → customers.user_id``. Tracked in DevPlan.md as a work item.
+- **P2 — ``consent_records`` is gone**: Migration 5's legacy ``consent_records`` table and the consent_method enum were removed in the migration-5 cleanup. ``consent_notices`` + ``customer_consent_events`` is authoritative. Fix: none — any documentation or tooling still referencing ``consent_records`` must be updated.
+- **P2 — No notice seeder**: ``consent_notices`` must be populated manually or by an admin tool. A fresh deployment has zero notices and the consent flow returns empty. Fix: add a seed migration for the initial privacy / KYC notices, or an admin endpoint gated by a service-account role.
+- **P2 — No consent-event deduplication at the DB level**: The append-only table accepts a ``granted`` event followed immediately by another ``granted``. The handler is expected to detect and no-op identical events, but nothing in the schema enforces it. Fix: add a ``CHECK`` against the last event via a trigger.
+- **P2 — No notification on new notice version**: When a notice is retired and a replacement published, users with prior consent aren't re-prompted. Fix: add a compliance job that flags users whose latest consent references a retired notice.
 
 ---
 

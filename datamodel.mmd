@@ -1,4 +1,4 @@
-%%{init: {"theme":"Redux Dark","themeVariables":{"background":"#888282","mainBkg":"#FFFFFF","primaryColor":"#D3D3D3","primaryTextColor":"#333333","primaryBorderColor":"#D32F2F","lineColor":"#D32F2F","secondaryColor":"#4A4A4A","secondaryTextColor":"#FFFFFF","secondaryBorderColor":"#D32F2F","tertiaryColor":"#333333","tertiaryTextColor":"#FFFFFF","tertiaryBorderColor":"#D32F2F","textColor":"#333333"}}}%%
+%%{init: {"theme":"base","themeVariables":{"background":"#FFFFFF","mainBkg":"#FFFFFF","primaryColor":"#333333","primaryTextColor":"#FFFFFF","primaryBorderColor":"#D32F2F","lineColor":"#D32F2F","secondaryColor":"#4A4A4A","secondaryTextColor":"#FFFFFF","secondaryBorderColor":"#D32F2F","tertiaryColor":"#4A4A4A","tertiaryTextColor":"#333333","tertiaryBorderColor":"#D32F2F","textColor":"#333333"}}}%%
 erDiagram
     %% Auth/session and the current consent registry use users, not customers.
     %% Legacy consent_record table removed in migration 5 cleanup; 
@@ -7,7 +7,7 @@ erDiagram
     USER ||--o{ VERIFICATION_CASE : has
     USER ||--o{ CONSENT_EVENT : records
     CONSENT_NOTICE ||--o{ CONSENT_EVENT : referenced_by
-    USER o|--o| CUSTOMER : financial_profile
+    USER o|--o| CUSTOMER : is
 
     CUSTOMER ||--o{ ACCOUNT : owns
     CUSTOMER ||--o{ LOAN_APPLICATION : submits
