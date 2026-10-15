@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: ["5-fintech-backend"]
+    branches: [" "]
   pull_request:
-    branches: [main , dev]
+    branches: [main , dev, release]
 
 permissions:
   contents: read
