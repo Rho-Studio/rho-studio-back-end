@@ -11,7 +11,7 @@
  * File:        route_tests.rs
  * Author:      Alexis Tercero
  * Email:       alexis.tercero@rho.studio
- * Date:        2026-10-13
+ * Date:        2026-10-20
  * ============================================================================
  * Description:
  *      Router-level integration test harness. Boots the full `Router` via
@@ -75,6 +75,9 @@
  *
  *      Tests covered:
  *          - /health, /health/ready, /version
+ *          - /api/v1/auth/signup        validation rejection (invalid email, 
+ *                                       short password, missing fields, 
+ *                                       malformed JSON)
  *          - /api/v1/auth/login         validation rejection
  *          - /api/v1/auth/refresh       malformed JSON
  *          - /api/v1/auth/logout        malformed body
@@ -387,6 +390,62 @@ async fn get_version_returns_package_identity() {
         .expect("read version body");
     let value: serde_json::Value = serde_json::from_slice(&body).expect("parse version body");
     assert_eq!(value["name"], env!("CARGO_PKG_NAME"));
+}
+
+#[tokio::test]
+async fn post_auth_signup_rejects_invalid_email() {
+    let app = test_app().await;
+    assert_status(
+        &app.router,
+        Method::POST,
+        "/api/v1/auth/signup",
+        Some(r#"{"email":"not-an-email","password":"correct-horse-battery-staple"}"#),
+        true,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn post_auth_signup_rejects_short_password() {
+    let app = test_app().await;
+    assert_status(
+        &app.router,
+        Method::POST,
+        "/api/v1/auth/signup",
+        Some(r#"{"email":"user@example.test","password":"short"}"#),
+        true,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn post_auth_signup_rejects_malformed_json() {
+    let app = test_app().await;
+    assert_status(
+        &app.router,
+        Method::POST,
+        "/api/v1/auth/signup",
+        Some("not-json"),
+        true,
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn post_auth_signup_rejects_missing_password() {
+    let app = test_app().await;
+    assert_status(
+        &app.router,
+        Method::POST,
+        "/api/v1/auth/signup",
+        Some(r#"{"email":"user@example.test"}"#),
+        true, // include_connect_info
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
 }
 
 #[tokio::test]

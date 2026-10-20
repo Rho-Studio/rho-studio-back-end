@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [" "]
+    branches: ["26-release-v001"]
   pull_request:
     branches: [main , dev, release]
 
