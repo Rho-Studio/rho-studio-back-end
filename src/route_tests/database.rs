@@ -64,6 +64,15 @@
  *          - A duplicate signup with the same email returns 422 and does
  *            not create a second `users` row.
  * 
+ *          postgres_backed_login_rejects_invalid_password_and_inactive_user
+ *          - Setup seeds a verified, active user.
+ *          - Attempt login with an incorrect password.
+ *          - Returns 401 Unauthorized with the generic public error message
+ *            "Authentication failed" (mitigating user enumeration).
+ *          - Manually sets `is_active = false` on the user.
+ *          - Attempting login with the correct password returns 401
+ *            Unauthorized, failing closed at the SQL query level.
+ * 
  *          postgres_backed_refresh_rejects_expired_token
  *          - Setup seeds a user and logs in.
  *          - Manually forces the database row's `expires_at` into the past.
@@ -334,6 +343,78 @@ async fn postgres_backed_signup_creates_user_and_rejects_duplicate() {
         .await
         .unwrap();
     assert_eq!(count, 1, "duplicate signup must not create a second user");
+}
+
+/*---------------------------------------------------------------------------
+*   Login checks
+* ---------------------------------------------------------------------------*/
+
+#[tokio::test]
+async fn postgres_backed_login_rejects_invalid_password_and_inactive_user() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+
+    // 1. Seed a verified, active user
+    let user_id = Uuid::new_v4();
+    let email = format!("login-test-{}@example.test", user_id);
+    let password = "correct-horse-battery-staple";
+    
+    let salt = SaltString::generate(&mut OsRng);
+    let password_hash = Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .expect("hash password")
+        .to_string();
+        
+    sqlx::query(
+        "INSERT INTO users (id, email, password_hash, email_verified, is_active)
+         VALUES ($1, $2, $3, true, true)",
+    )
+    .bind(user_id)
+    .bind(&email)
+    .bind(&password_hash)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 2. Attempt login with WRONG password
+    let bad_login = request_with_headers(
+        &app.router,
+        axum::http::Method::POST,
+        "/api/v1/auth/login",
+        Some(&json!({
+            "email": email,
+            "password": "wrong-password"
+        }).to_string()),
+        true,
+        &[],
+    ).await;
+    
+    // Assert 401 Unauthorized
+    assert_eq!(bad_login.status(), StatusCode::UNAUTHORIZED, "Wrong password must be rejected");
+    let body = json_body(bad_login).await;
+    assert_eq!(body["error"]["message"], "Authentication failed");
+
+    // 3. Deactivate the user in the DB
+    sqlx::query("UPDATE users SET is_active = false WHERE id = $1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // 4. Attempt login with the CORRECT password but inactive account
+    let inactive_login = request_with_headers(
+        &app.router,
+        axum::http::Method::POST,
+        "/api/v1/auth/login",
+        Some(&json!({
+            "email": email,
+            "password": password
+        }).to_string()),
+        true,
+        &[],
+    ).await;
+
+    // Assert 401 Unauthorized (fails closed at the SQL level)
+    assert_eq!(inactive_login.status(), StatusCode::UNAUTHORIZED, "Inactive user must be rejected");
 }
 
 /*---------------------------------------------------------------------------
