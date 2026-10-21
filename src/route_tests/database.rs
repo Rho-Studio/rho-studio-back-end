@@ -11,7 +11,7 @@
  * File:        route_tests/database.rs
  * Author:      Alexis Tercero
  * Email:       alexis.tercero@rho.studio
- * Date:        2026-10-13
+ * Date:        2026-10-21
  * ============================================================================
  * Description:
  *      Container-backed integration tests for the authentication and
@@ -63,6 +63,31 @@
  *            auto-login session.
  *          - A duplicate signup with the same email returns 422 and does
  *            not create a second `users` row.
+ * 
+ *          postgres_backed_refresh_rejects_expired_token
+ *          - Setup seeds a user and logs in.
+ *          - Manually forces the database row's `expires_at` into the past.
+ *          - Attempting to refresh returns 401.
+ *          - The specific expired token row is marked as revoked.
+ *
+ *        postgres_backed_refresh_rejects_inactive_user_and_revokes_family
+ *          - Setup seeds a user and logs in.
+ *          - Manually sets `is_active = false` on the user.
+ *          - Attempting to refresh returns 401.
+ *          - The entire token family is revoked as a security measure.
+ *
+ *        postgres_backed_refresh_rejects_unverified_user_and_revokes_family
+ *          - Setup seeds a user and logs in.
+ *          - Manually sets `email_verified = false` on the user.
+ *          - Attempting to refresh returns 401.
+ *          - The entire token family is revoked as a security measure.
+ *
+ *        postgres_backed_refresh_rejects_access_token_confusion
+ *          - Setup seeds a user and logs in.
+ *          - Attempts to use an Access Token in the `refresh_token` field.
+ *          - Returns 401 at the JWT decoding step (fails before touching
+ *            the database).
+ *          - Verifies that no tokens were revoked.
  *
  *        postgres_backed_auth_refresh_logout_profile_and_consent_flow
  *          - Login with a case-insensitive email
@@ -309,6 +334,211 @@ async fn postgres_backed_signup_creates_user_and_rejects_duplicate() {
         .await
         .unwrap();
     assert_eq!(count, 1, "duplicate signup must not create a second user");
+}
+
+/*---------------------------------------------------------------------------
+*   Refresh Edge Cases
+* ---------------------------------------------------------------------------*/
+
+/// Helper to reduce duplication in the refresh edge-case tests.
+/// Seeds a verified user, logs them in, and returns the tokens.
+async fn seed_and_login(app: &TestApp, pool: &PgPool) -> (Uuid, String, String) {
+    let user_id = Uuid::new_v4();
+    let email = format!("refresh-test-{}@example.test", user_id);
+    let password = "integration-test-password";
+    
+    let salt = SaltString::generate(&mut OsRng);
+    let password_hash = Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .expect("hash test password")
+        .to_string();
+
+    sqlx::query(
+        "INSERT INTO users (id, email, display_name, password_hash, email_verified, is_active)
+         VALUES ($1, $2, $3, $4, true, true)",
+    )
+    .bind(user_id)
+    .bind(&email)
+    .bind("Refresh Test User")
+    .bind(password_hash)
+    .execute(pool)
+    .await
+    .expect("seed verified test user");
+
+    let login_response = request_with_headers(
+        &app.router,
+        axum::http::Method::POST,
+        "/api/v1/auth/login",
+        Some(&json!({
+            "email": email,
+            "password": password
+        }).to_string()),
+        true,
+        &[],
+    )
+    .await;
+    assert_eq!(login_response.status(), StatusCode::OK);
+
+    let login = json_body(login_response).await;
+    let access_token = login["access_token"].as_str().unwrap().to_string();
+    let refresh_token = login["refresh_token"].as_str().unwrap().to_string();
+
+    (user_id, access_token, refresh_token)
+}
+
+#[tokio::test]
+async fn postgres_backed_refresh_rejects_expired_token() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+    
+    // 1. Setup: Seed a user, login, and get the refresh token
+    let (_user_id, _access_token, refresh_token) = seed_and_login(&app, &pool).await;
+    let token_hash = hash_token(&refresh_token);
+
+    // 2. Manipulate DB: Force the token to be expired
+    // We must push created_at into the past as well to satisfy:
+    // CHECK (expires_at > created_at)
+    sqlx::query(
+        "UPDATE refresh_tokens 
+         SET created_at = now() - INTERVAL '2 hours', 
+             expires_at = now() - INTERVAL '1 hour' 
+         WHERE token_hash = $1"
+    )
+    .bind(&token_hash)
+    .execute(&pool)
+    .await
+    .expect("fail to expire token");
+
+    // 3. Attempt refresh
+    let body = json!({ "refresh_token": refresh_token }).to_string();
+    let response = request_with_headers(
+        &app.router, axum::http::Method::POST, "/api/v1/auth/refresh", Some(&body), true, &[]
+    ).await;
+
+    // 4. Assert 401
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // 5. Assert the specific row is now revoked
+    let is_revoked: bool = sqlx::query_scalar(
+        "SELECT revoked_at IS NOT NULL FROM refresh_tokens WHERE token_hash = $1"
+    )
+    .bind(&token_hash)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(is_revoked, "Expired token should be marked as revoked");
+}
+
+#[tokio::test]
+async fn postgres_backed_refresh_rejects_inactive_user_and_revokes_family() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+    
+    let (user_id, _access_token, refresh_token) = seed_and_login(&app, &pool).await;
+    let token_hash = hash_token(&refresh_token);
+
+    let family_id: Uuid = sqlx::query_scalar(
+        "SELECT token_family_id FROM refresh_tokens WHERE token_hash = $1"
+    )
+    .bind(&token_hash)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // 1. Manipulate DB: Deactivate the user
+    sqlx::query("UPDATE users SET is_active = false WHERE id = $1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("fail to deactivate user");
+
+    // 2. Attempt refresh
+    let body = json!({ "refresh_token": refresh_token }).to_string();
+    let response = request_with_headers(
+        &app.router, axum::http::Method::POST, "/api/v1/auth/refresh", Some(&body), true, &[]
+    ).await;
+
+    // 3. Assert 401
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // 4. Assert the *whole family* is revoked
+    let active_tokens: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM refresh_tokens WHERE token_family_id = $1 AND revoked_at IS NULL"
+    )
+    .bind(family_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    
+    assert_eq!(active_tokens, 0, "Inactive user should trigger family-wide revocation");
+}
+
+#[tokio::test]
+async fn postgres_backed_refresh_rejects_unverified_user_and_revokes_family() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+    
+    let (user_id, _access_token, refresh_token) = seed_and_login(&app, &pool).await;
+    let token_hash = hash_token(&refresh_token);
+
+    let family_id: Uuid = sqlx::query_scalar(
+        "SELECT token_family_id FROM refresh_tokens WHERE token_hash = $1"
+    )
+    .bind(&token_hash)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // 1. Manipulate DB: Unverify the user
+    sqlx::query("UPDATE users SET email_verified = false WHERE id = $1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("fail to unverify user");
+
+    // 2. Attempt refresh
+    let body = json!({ "refresh_token": refresh_token }).to_string();
+    let response = request_with_headers(
+        &app.router, axum::http::Method::POST, "/api/v1/auth/refresh", Some(&body), true, &[]
+    ).await;
+
+    // 3. Assert 401
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // 4. Assert the *whole family* is revoked
+    let active_tokens: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM refresh_tokens WHERE token_family_id = $1 AND revoked_at IS NULL"
+    )
+    .bind(family_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    
+    assert_eq!(active_tokens, 0, "Unverified user should trigger family-wide revocation");
+}
+
+#[tokio::test]
+async fn postgres_backed_refresh_rejects_access_token_confusion() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+    
+    // 1. Setup: Get BOTH tokens
+    let (_user_id, access_token, _refresh_token) = seed_and_login(&app, &pool).await;
+
+    // 2. Attempt refresh using the ACCESS token
+    let body = json!({ "refresh_token": access_token }).to_string();
+    let response = request_with_headers(
+        &app.router, axum::http::Method::POST, "/api/v1/auth/refresh", Some(&body), true, &[]
+    ).await;
+
+    // 3. Assert 401
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // 4. Assert that no tokens were revoked (it should fail at the JWT decode step, before DB lookup)
+    let active_tokens: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM refresh_tokens WHERE revoked_at IS NULL"
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    
+    assert_eq!(active_tokens, 1, "Token type confusion should fail before touching the DB");
 }
 
 // ---------------------------------------------------------------------------

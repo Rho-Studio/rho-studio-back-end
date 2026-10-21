@@ -11,7 +11,7 @@
  * File:        route_tests.rs
  * Author:      Alexis Tercero
  * Email:       alexis.tercero@rho.studio
- * Date:        2026-10-20
+ * Date:        2026-10-21
  * ============================================================================
  * Description:
  *      Router-level integration test harness. Boots the full `Router` via
@@ -36,7 +36,7 @@
  *          cargo test route_tests::
  *
  *      Run both tiers:
- *          cargo test -- --test-threads=1
+ *          cargo test --locked -- --test-threads=1   
  *
  *      Dependency substitutes:
  *          - PgPool       lazy pool pointed at 127.0.0.1:1. Never opens a
@@ -79,7 +79,8 @@
  *                                       short password, missing fields, 
  *                                       malformed JSON)
  *          - /api/v1/auth/login         validation rejection
- *          - /api/v1/auth/refresh       malformed JSON
+ *          - /api/v1/auth/refresh       malformed JSON, 
+ *                                       rejects oversized token (4096B) with 401
  *          - /api/v1/auth/logout        malformed body
  *          - /api/v1/auth/logout-all    unauthenticated -> 401
  *          - /api/v1/me                 unauthenticated -> 401
@@ -95,6 +96,8 @@
  *          - No test covers `Content-Type` enforcement.
  *          - No test covers 5xx from a real downstream failure — the lazy
  *            pool always fails at the same point.
+ *          - Rate limiting (429) is not asserted at this tier because the
+ *            mock Redis always returns a count of 1.
  *
  *      Not a serialized type. Not a public API surface. Compiled only under
  *      `#[cfg(test)]`.
@@ -472,6 +475,24 @@ async fn post_auth_refresh_rejects_malformed_json() {
         Some("not-json"),
         true,
         StatusCode::BAD_REQUEST,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn post_auth_refresh_rejects_oversized_token() {
+    let app = test_app().await;
+    // Create a 4097-byte string to bypass the 4096 byte limit
+    let huge_token = "a".repeat(4097);
+    let body = format!(r#"{{"refresh_token":"{}"}}"#, huge_token);
+    
+    assert_status(
+        &app.router,
+        Method::POST,
+        "/api/v1/auth/refresh",
+        Some(&body),
+        true, // include_connect_info
+        StatusCode::UNAUTHORIZED, 
     )
     .await;
 }

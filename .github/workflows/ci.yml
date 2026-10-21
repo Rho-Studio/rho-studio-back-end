@@ -1,4 +1,4 @@
-name: CI
+name: CI Rurst::FAPI::Rho.Studio®
 
 on:
   push:
@@ -43,11 +43,11 @@ jobs:
       # - name: Clippy
       #   run: cargo clippy --all-targets --locked -- -D warnings
 
-      - name: Compile project
+      - name: Compile Rho-Studio-Rust-Backend
         run: cargo build --locked
 
       - name: Verify Docker is available
         run: docker info
       
-      - name: Test
+      - name: Test Suite FAPI by Rho.Studio®
         run: cargo test --locked -- --test-threads=1
