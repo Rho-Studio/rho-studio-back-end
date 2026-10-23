@@ -11,7 +11,7 @@
  * File:        route_tests/database.rs
  * Author:      Alexis Tercero
  * Email:       alexis.tercero@rho.studio
- * Date:        2026-10-21
+ * Date:        2026-10-23
  * ============================================================================
  * Description:
  *      Container-backed integration tests for the authentication and
@@ -98,6 +98,15 @@
  *            the database).
  *          - Verifies that no tokens were revoked.
  *
+ *        postgres_backed_logout_succeeds_with_expired_or_oversized_tokens
+ *          - Setup seeds a user, logs in, and gets a refresh token.
+ *          - Forces the token to be expired in the database.
+ *          - Asserts that calling /logout still returns 204, proving the
+ *            "fail-open" design allows clients to clear state even if the
+ *            token is stale.
+ *          - Asserts that calling /logout with an oversized payload
+ *            (> 4096 bytes) also returns 204 without hitting the database.
+ * 
  *        postgres_backed_auth_refresh_logout_profile_and_consent_flow
  *          - Login with a case-insensitive email
  *            (`ROUTE-TEST@example.test` matches the seeded
@@ -625,6 +634,50 @@ async fn postgres_backed_refresh_rejects_access_token_confusion() {
 // ---------------------------------------------------------------------------
 // Full auth + consent flow
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn postgres_backed_logout_succeeds_with_expired_or_oversized_tokens() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+
+    // 1. Setup a user and get a valid token
+    let (_user_id, _access_token, refresh_token) = seed_and_login(&app, &pool).await;
+    let token_hash = hash_token(&refresh_token);
+
+    // 2. Force the token to be expired in the DB
+    sqlx::query(
+        "UPDATE refresh_tokens 
+         SET created_at = now() - INTERVAL '2 hours', 
+             expires_at = now() - INTERVAL '1 hour' 
+         WHERE token_hash = $1"
+    )
+    .bind(&token_hash)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 3. Logout with the expired token (should still return 204)
+    let logout_expired = request_with_headers(
+        &app.router,
+        axum::http::Method::POST,
+        "/api/v1/auth/logout",
+        Some(&json!({ "refresh_token": refresh_token }).to_string()),
+        false,
+        &[],
+    ).await;
+    assert_eq!(logout_expired.status(), StatusCode::NO_CONTENT);
+
+    // 4. Logout with an oversized garbage token (should return 204 without hitting DB)
+    let oversized_token = "a".repeat(4097);
+    let logout_oversized = request_with_headers(
+        &app.router,
+        axum::http::Method::POST,
+        "/api/v1/auth/logout",
+        Some(&json!({ "refresh_token": oversized_token }).to_string()),
+        false,
+        &[],
+    ).await;
+    assert_eq!(logout_oversized.status(), StatusCode::NO_CONTENT);
+}
 
 #[tokio::test]
 async fn postgres_backed_auth_refresh_logout_profile_and_consent_flow() {
