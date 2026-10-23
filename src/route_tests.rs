@@ -11,7 +11,7 @@
  * File:        route_tests.rs
  * Author:      Alexis Tercero
  * Email:       alexis.tercero@rho.studio
- * Date:        2026-10-13
+ * Date:        2026-10-21
  * ============================================================================
  * Description:
  *      Router-level integration test harness. Boots the full `Router` via
@@ -36,7 +36,7 @@
  *          cargo test route_tests::
  *
  *      Run both tiers:
- *          cargo test -- --test-threads=1
+ *          cargo test --locked -- --test-threads=1   
  *
  *      Dependency substitutes:
  *          - PgPool       lazy pool pointed at 127.0.0.1:1. Never opens a
@@ -75,8 +75,12 @@
  *
  *      Tests covered:
  *          - /health, /health/ready, /version
+ *          - /api/v1/auth/signup        validation rejection (invalid email, 
+ *                                       short password, missing fields, 
+ *                                       malformed JSON)
  *          - /api/v1/auth/login         validation rejection
- *          - /api/v1/auth/refresh       malformed JSON
+ *          - /api/v1/auth/refresh       malformed JSON, 
+ *                                       rejects oversized token (4096B) with 401
  *          - /api/v1/auth/logout        malformed body
  *          - /api/v1/auth/logout-all    unauthenticated -> 401
  *          - /api/v1/me                 unauthenticated -> 401
@@ -92,6 +96,8 @@
  *          - No test covers `Content-Type` enforcement.
  *          - No test covers 5xx from a real downstream failure — the lazy
  *            pool always fails at the same point.
+ *          - Rate limiting (429) is not asserted at this tier because the
+ *            mock Redis always returns a count of 1.
  *
  *      Not a serialized type. Not a public API surface. Compiled only under
  *      `#[cfg(test)]`.
@@ -390,6 +396,62 @@ async fn get_version_returns_package_identity() {
 }
 
 #[tokio::test]
+async fn post_auth_signup_rejects_invalid_email() {
+    let app = test_app().await;
+    assert_status(
+        &app.router,
+        Method::POST,
+        "/api/v1/auth/signup",
+        Some(r#"{"email":"not-an-email","password":"correct-horse-battery-staple"}"#),
+        true,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn post_auth_signup_rejects_short_password() {
+    let app = test_app().await;
+    assert_status(
+        &app.router,
+        Method::POST,
+        "/api/v1/auth/signup",
+        Some(r#"{"email":"user@example.test","password":"short"}"#),
+        true,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn post_auth_signup_rejects_malformed_json() {
+    let app = test_app().await;
+    assert_status(
+        &app.router,
+        Method::POST,
+        "/api/v1/auth/signup",
+        Some("not-json"),
+        true,
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn post_auth_signup_rejects_missing_password() {
+    let app = test_app().await;
+    assert_status(
+        &app.router,
+        Method::POST,
+        "/api/v1/auth/signup",
+        Some(r#"{"email":"user@example.test"}"#),
+        true, // include_connect_info
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn post_auth_login_rejects_invalid_credentials_shape() {
     let app = test_app().await;
     assert_status(
@@ -413,6 +475,24 @@ async fn post_auth_refresh_rejects_malformed_json() {
         Some("not-json"),
         true,
         StatusCode::BAD_REQUEST,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn post_auth_refresh_rejects_oversized_token() {
+    let app = test_app().await;
+    // Create a 4097-byte string to bypass the 4096 byte limit
+    let huge_token = "a".repeat(4097);
+    let body = format!(r#"{{"refresh_token":"{}"}}"#, huge_token);
+    
+    assert_status(
+        &app.router,
+        Method::POST,
+        "/api/v1/auth/refresh",
+        Some(&body),
+        true, // include_connect_info
+        StatusCode::UNAUTHORIZED, 
     )
     .await;
 }
@@ -457,6 +537,35 @@ async fn get_me_requires_authentication() {
         StatusCode::UNAUTHORIZED,
     )
     .await;
+}
+
+#[tokio::test]
+async fn get_me_rejects_malformed_authorization_header() {
+    let app = test_app().await;
+
+    // 1. Wrong scheme (Basic instead of Bearer)
+    let response = request_with_headers(
+        &app.router,
+        Method::GET,
+        "/api/v1/me",
+        None,
+        false,
+        &[("authorization", "Basic dXNlcjpwYXNz")],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // 2. Bearer with an empty token
+    let response = request_with_headers(
+        &app.router,
+        Method::GET,
+        "/api/v1/me",
+        None,
+        false,
+        &[("authorization", "Bearer ")],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
