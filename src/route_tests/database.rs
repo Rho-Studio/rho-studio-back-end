@@ -129,6 +129,19 @@
  *          - A fresh login creates a new family; logout revokes that
  *            family; the access token from that session is rejected on
  *            `/me` afterward.
+ * 
+ *        postgres_backed_logout_all_revokes_all_user_sessions
+ *          - Setup seeds User A with two active sessions (simulating two devices) 
+ *            and User B with one active session.
+ *          - Verifies all three sessions are initially valid.
+ *          - Calls `/logout-all` authenticated with User A's first session.
+ *          - Returns 204 No Content.
+ *          - Proves both of User A's access tokens are immediately rejected (401) 
+ *            by `/me`, demonstrating the session-liveness check works.
+ *          - Proves both of User A's refresh tokens are rejected (401) by `/refresh`.
+ *          - Proves User B's access and refresh tokens remain completely unaffected.
+ *          - Verifies the final database state: User A has 0 active refresh tokens,
+ *            and User B has 1 active refresh token.
  *
  *      Design notes:
  *          - `start_test_env` is the single entry point for a container-
@@ -631,6 +644,56 @@ async fn postgres_backed_refresh_rejects_access_token_confusion() {
     assert_eq!(active_tokens, 1, "Token type confusion should fail before touching the DB");
 }
 
+/*---------------------------------------------------------------------------
+*   me route - unverifed users cant see info
+* ---------------------------------------------------------------------------*/
+
+#[tokio::test]
+async fn postgres_backed_me_rejects_deactivated_user() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+    let (user_id, access_token, _) = seed_and_login(&app, &pool).await;
+    let bearer = format!("Bearer {}", access_token);
+
+    // Deactivate user in DB
+    sqlx::query("UPDATE users SET is_active = false WHERE id = $1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Attempt /me
+    let response = request_with_headers(
+        &app.router, axum::http::Method::GET, "/api/v1/me", None, false,
+        &[("authorization", &bearer)],
+    ).await;
+
+    // Should fail SQL query and return 401
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn postgres_backed_me_rejects_unverified_user() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+    let (user_id, access_token, _) = seed_and_login(&app, &pool).await;
+    let bearer = format!("Bearer {}", access_token);
+
+    // Unverify user in DB
+    sqlx::query("UPDATE users SET email_verified = false WHERE id = $1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Attempt /me
+    let response = request_with_headers(
+        &app.router, axum::http::Method::GET, "/api/v1/me", None, false,
+        &[("authorization", &bearer)],
+    ).await;
+
+    // Should fail SQL query and return 401
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
 // ---------------------------------------------------------------------------
 // Full auth + consent flow
 // ---------------------------------------------------------------------------
@@ -981,4 +1044,105 @@ async fn postgres_backed_auth_refresh_logout_profile_and_consent_flow() {
     )
     .await;
     assert_eq!(logged_out_profile.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn postgres_backed_logout_all_revokes_all_user_sessions() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+
+    // 1. Create User A and their first session (Device 1)
+    let (user_a_id, access_a1, refresh_a1) = seed_and_login(&app, &pool).await;
+    
+    // 2. Create a second session for User A (Device 2)
+    // We know the email and password because seed_and_login uses a deterministic format.
+    let email_a = format!("refresh-test-{}@example.test", user_a_id);
+    let password = "integration-test-password";
+    
+    let login_a2_res = request_with_headers(
+        &app.router,
+        axum::http::Method::POST,
+        "/api/v1/auth/login",
+        Some(&json!({ "email": email_a, "password": password }).to_string()),
+        true,
+        &[],
+    ).await;
+    assert_eq!(login_a2_res.status(), StatusCode::OK);
+    
+    let login_a2 = json_body(login_a2_res).await;
+    let access_a2 = login_a2["access_token"].as_str().unwrap().to_string();
+    let refresh_a2 = login_a2["refresh_token"].as_str().unwrap().to_string();
+
+    // 3. Create User B and their session
+    let (_user_b_id, access_b, refresh_b) = seed_and_login(&app, &pool).await;
+
+    // Helpers to quickly check endpoint statuses
+    let check_me = |token: &str| {
+        let router = app.router.clone();
+        let bearer = format!("Bearer {}", token);
+        async move {
+            request_with_headers(
+                &router, axum::http::Method::GET, "/api/v1/me", None, false,
+                &[("authorization", &bearer)]
+            ).await
+        }
+    };
+
+    let check_refresh = |token: &str| {
+        let router = app.router.clone();
+        let body = json!({ "refresh_token": token }).to_string();
+        async move {
+            request_with_headers(
+                &router, axum::http::Method::POST, "/api/v1/auth/refresh",
+                Some(&body), true, &[]
+            ).await
+        }
+    };
+
+    // 4. Sanity Check: All sessions are currently valid
+    assert_eq!(check_me(&access_a1).await.status(), StatusCode::OK);
+    assert_eq!(check_me(&access_a2).await.status(), StatusCode::OK);
+    assert_eq!(check_me(&access_b).await.status(), StatusCode::OK);
+
+    // 5. Execute Logout-All using User A's first session (Device 1)
+    let logout_all_res = request_with_headers(
+        &app.router,
+        axum::http::Method::POST,
+        "/api/v1/auth/logout-all",
+        None,
+        false,
+        &[("authorization", &format!("Bearer {}", access_a1))],
+    ).await;
+    assert_eq!(logout_all_res.status(), StatusCode::NO_CONTENT);
+
+    // 6. Verify User A's Access Tokens are immediately dead
+    // (Because authenticated_user_id performs a session-liveness check)
+    assert_eq!(check_me(&access_a1).await.status(), StatusCode::UNAUTHORIZED, "Access Token 1 must be revoked");
+    assert_eq!(check_me(&access_a2).await.status(), StatusCode::UNAUTHORIZED, "Access Token 2 must be revoked");
+
+    // 7. Verify User A's Refresh Tokens are dead
+    assert_eq!(check_refresh(&refresh_a1).await.status(), StatusCode::UNAUTHORIZED, "Refresh Token 1 must be revoked");
+    assert_eq!(check_refresh(&refresh_a2).await.status(), StatusCode::UNAUTHORIZED, "Refresh Token 2 must be revoked");
+
+    // 8. Verify User B is untouched
+    assert_eq!(check_me(&access_b).await.status(), StatusCode::OK, "User B must remain logged in");
+    assert_eq!(check_refresh(&refresh_b).await.status(), StatusCode::OK, "User B refresh must still work");
+
+    // 9. Verify Database State
+    let active_a: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM refresh_tokens WHERE user_id = $1 AND revoked_at IS NULL"
+    )
+    .bind(user_a_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(active_a, 0, "User A should have 0 active tokens");
+
+    let active_b: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM refresh_tokens WHERE user_id = $1 AND revoked_at IS NULL"
+    )
+    .bind(_user_b_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(active_b, 1, "User B should still have 1 active token");
 }

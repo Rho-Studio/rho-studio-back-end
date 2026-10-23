@@ -540,6 +540,35 @@ async fn get_me_requires_authentication() {
 }
 
 #[tokio::test]
+async fn get_me_rejects_malformed_authorization_header() {
+    let app = test_app().await;
+
+    // 1. Wrong scheme (Basic instead of Bearer)
+    let response = request_with_headers(
+        &app.router,
+        Method::GET,
+        "/api/v1/me",
+        None,
+        false,
+        &[("authorization", "Basic dXNlcjpwYXNz")],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // 2. Bearer with an empty token
+    let response = request_with_headers(
+        &app.router,
+        Method::GET,
+        "/api/v1/me",
+        None,
+        false,
+        &[("authorization", "Bearer ")],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn get_consent_notices_requires_authentication() {
     let app = test_app().await;
     assert_status(
