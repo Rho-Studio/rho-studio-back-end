@@ -1,5 +1,7 @@
 # Rho Studio Fintech Backend
 
+[![CI](https://github.com/Rho-Studio/rho-studio-back-end/actions/workflows/ci.yml/badge.svg)](https://github.com/Rho-Studio/rho-studio-back-end/actions/workflows/ci.yml)
+
 Rust/Axum backend foundation for a Mexico-first mobile lending product. The
 running service provides health/version checks, self-service signup and
 session authentication, and consent notice/evidence routes. Customer accounts,
@@ -86,9 +88,9 @@ All listed routes are registered in `src/main.rs`.
 | `POST` | `/api/v1/auth/logout` | Revoke the supplied token family |
 | `POST` | `/api/v1/auth/logout-all` | Revoke all sessions for the authenticated user |
 | `GET` | `/api/v1/me` | Return the authenticated user's profile projection |
-| `GET` | `/api/v1/consents/notices?locale=es-MX` | List published notices for a locale |
+<!-- | `GET` | `/api/v1/consents/notices?locale=es-MX` | List published notices for a locale |
 | `GET` | `/api/v1/me/consents` | Return the authenticated user's latest consent states |
-| `POST` | `/api/v1/consents` | Record a grant or withdrawal for a notice version |
+| `POST` | `/api/v1/consents` | Record a grant or withdrawal for a notice version | -->
 
 Protected routes require ``Authorization: Bearer <access_token>``. Self-service signup is implemented; email verification and password recovery are not. Signup currently creates users with email_verified = true for development convenience — the production flow must add a verification step before that column can meaningfully gate login. Account provisioning, KYC, and all financial workflows remain unimplemented.
 
