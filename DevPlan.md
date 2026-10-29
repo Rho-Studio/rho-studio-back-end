@@ -55,7 +55,7 @@ Iterations are sequenced, not dated. Each is a two-week timebox. The team does n
 | 3 | Secure customer identity and resource ownership | Token and session lifecycle, authorization policy, abuse limits, negative authorization tests | F2 | — |
 | 4 | Harden identity: recovery, verification, and key management | Email verification, password reset, password strength, session listing, kid-based key rotation, PII redaction policy | F2 | — |
 | 5 | Onboard a customer with approved consent and protected evidence | Consent registry, published notices, append-only evidence, customer-identity linkage | F3 | G2 |
-| 6 | Complete identity verification against a provider sandbox | KYC case lifecycle, provider adapter, private document upload with quarantine and access audit | F3 | — |
+| 6 | Complete identity verification | KYC case lifecycle, private document upload with quarantine and access audit | F3 | — |
 | 7 | Submit and receive an auditable loan decision | Application lifecycle, required-data checklist, idempotent submission, versioned decision evidence with reason codes | F4, F5 | G3 |
 | 8 | Present and accept a versioned offer safely | Immutable offer and disclosure references, acceptance evidence, signature sandbox | F6 | — |
 | 9 | Prove ledger and command invariants without moving live money | Balanced journal posting, idempotency store, transfer state machine, simulator-driven ledger tests | F7 | G4 |
@@ -148,10 +148,12 @@ flowchart LR
 	classDef rhoRed fill:#D32F2F,stroke:#FFFFFF,color:#FFFFFF
 	classDef rhoFeature fill:#4A4A4A,stroke:#D32F2F,color:#FFFFFF
 	classDef rhoCore fill:#333333,stroke:#D32F2F,color:#FFFFFF
+	classDef rhoActive fill:#018a01,stroke:#D32F2F,color:#FFFFFF
 	classDef rhoData fill:#D3D3D3,stroke:#D32F2F,color:#333333
 	class mobile rhoFeature
 	class webhooks,idem,ledger,outbox rhoRed
-	class auth,inbox,onboarding,lending,contracts,servicing,audit,recon,kyc,bank,sign,notify rhoCore
+	class auth,inbox,lending,contracts,servicing,audit,recon,kyc,bank,sign,notify rhoCore
+	class  onboarding rhoActive
 	class pg,s3,redis rhoData
 	style services fill:#D3D3D3,stroke:#D32F2F,color:#333333
 	style financial_core fill:#D3D3D3,stroke:#D32F2F,color:#333333
@@ -549,7 +551,7 @@ The Product Owner orders the backlog by customer/business value, risk reduction,
 | 1 | Align the product boundary and establish a running delivery skeleton | Approved MVP decisions/risk register; Rust service builds, tests, and deploys to an isolated non-production environment | E0 |
 | 2 | Establish the renamed fintech foundation and retire the fitness surface safely | CI gates, product identity, inventory and tested forward-only retirement approach; no fitness API behavior | E1 |
 | 3 | Secure customer identity and resource ownership | Token/session lifecycle, authorization policies, abuse limits, and negative authorization tests | E2 |
-| 4 | Onboard a customer with approved consent and protected evidence | Consent and KYC case flow, provider sandbox, private document quarantine/access audit | E3 |
+| 4 | Onboard a customer with approved consent and protected evidence | Consent and KYC case flow, private document quarantine/access audit | E3 |
 | 5 | Submit and receive an auditable loan decision | Application lifecycle, versioned decision evidence, reason codes, idempotent submission | E4 |
 | 6 | Present and accept a versioned offer safely | Immutable offer/disclosure references, acceptance evidence, signature sandbox | E5 |
 | 7 | Prove ledger and command invariants without moving live money | Balanced journal posting, idempotency, outbox/inbox, simulator-driven disbursement tests | E6 |
