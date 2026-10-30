@@ -2,7 +2,7 @@ name: CI Rurst::FAPI::Rho.Studio®
 
 on:
   push:
-    branches: ["26-release-v001"]
+    branches: ["40-privacy-notices-lifecycle"]
   pull_request:
     branches: [main , dev, release]
 

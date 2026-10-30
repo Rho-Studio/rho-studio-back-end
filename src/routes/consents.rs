@@ -11,12 +11,10 @@
  * File:        src/route/consents.rs
  * Author:      Alexis Tercero
  * Email:       alexis.tercero@rho.studio
- * Date:        2026-10-12
+ * Date:        2026-10-30
  * ============================================================================
  * Description:
- *      LFPDPPP consent registry handlers. This is the second of the two
- *      features delivered in Phase 1: it ships alongside the identity
- *      module so that the platform can record verifiable consent
+ *      LFPDPPP consent registry handlers. The platform can record verifiable consent
  *      evidence from day one, before any lending or financial workflow
  *      touches customer data.
  *
@@ -50,7 +48,7 @@
  *          distinct timestamps and ordering is deterministic.
  *
  *      State machine:
- *          The transition rules live in `crate::domain::consent`. The
+ *          The transition rules live in `domain::consent`. The
  *          handler asks the domain whether an event should be recorded
  *          given the current state, the requested action, and whether
  *          the notice is still published:
@@ -194,6 +192,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::FromRow;
 use uuid::Uuid;
+use once_cell::sync::Lazy; use regex::Regex;
 
 #[derive(Debug, Deserialize)]
 pub struct NoticeQuery {
@@ -252,10 +251,11 @@ pub async fn get_published_notices(
     headers: HeaderMap,
     Query(query): Query<NoticeQuery>,
 ) -> AppResult<Json<Vec<ConsentNoticeResponse>>> {
+    static LOCALE_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[a-z]{2}-[A-Z]{2}$").unwrap());
     let _user_id = auth::authenticated_user_id(&state, auth::bearer_token(&headers)?).await?;
     let locale = query.locale.unwrap_or_else(|| "es-MX".to_string());
-    if locale.is_empty() || locale.len() > 16 {
-        return Err(AppError::Validation("Invalid locale".to_string()));
+    if !LOCALE_REGEX.is_match(&locale) {
+        return Err(AppError::Validation("Invalid locale format".to_string()));
     }
 
     let notices = sqlx::query_as::<_, ConsentNoticeResponse>(
@@ -273,8 +273,14 @@ pub async fn get_published_notices(
     for notice in &notices {
         let actual_hash = format!("{:x}", Sha256::digest(notice.content.as_bytes()));
         if actual_hash != notice.content_sha256 {
+            tracing::error!(
+                notice_id = %notice.id,
+                expected_hash = %notice.content_sha256,
+                actual_hash = %actual_hash,
+                "CRITICAL: published consent notice content hash mismatch — possible database tampering"
+            );
             return Err(AppError::Internal(anyhow::anyhow!(
-                "published consent notice content hash mismatch"
+                "Content integrity verification failed"
             )));
         }
     }
