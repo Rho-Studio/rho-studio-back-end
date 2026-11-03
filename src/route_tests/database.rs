@@ -766,25 +766,13 @@ async fn postgres_backed_auth_refresh_logout_profile_and_consent_flow() {
     .await
     .expect("seed verified test user");
 
-    // --- Seed a published consent notice -------------------------------------
-    // let notice_id = Uuid::new_v4();
-    // let notice_content = "Integration-test privacy notice";
-    // let notice_hash = format!("{:x}", Sha256::digest(notice_content.as_bytes()));
-    // sqlx::query(
-    //     r#"
-    //     INSERT INTO consent_notices (
-    //         id, purpose_code, locale, version, content, content_sha256,
-    //         status, published_at
-    //     )
-    //     VALUES ($1, 'privacy-test', 'es-MX', 'test-v1', $2, $3, 'published', now())
-    //     "#,
-    // )
-    // .bind(notice_id)
-    // .bind(notice_content)
-    // .bind(notice_hash)
-    // .execute(&pool)
-    // .await
-    // .expect("seed published test notice");
+     // --- Fetch the seeded consent notice -------------------------------------
+    let notice_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM consent_notices WHERE purpose_code = 'privacy' AND locale = 'es-MX' AND version = '1.0'"
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("find seeded privacy notice");
 
     // --- Login (case-insensitive email lookup) -------------------------------
     let login_response = request_with_headers(
@@ -849,8 +837,8 @@ async fn postgres_backed_auth_refresh_logout_profile_and_consent_flow() {
     .await;
     assert_eq!(notice_response.status(), StatusCode::OK);
     let notices = json_body(notice_response).await;
-    assert_eq!(notices.as_array().expect("array").len(), 1);
-    // assert_eq!(notices[0]["id"], notice_id.to_string());
+    assert_eq!(notices.as_array().expect("array").len(), 2);
+    assert_eq!(notices[0]["id"], notice_id.to_string());
 
     let initial_consents = request_with_headers(
         &app.router,
@@ -889,15 +877,15 @@ async fn postgres_backed_auth_refresh_logout_profile_and_consent_flow() {
         .await;
         assert_eq!(response.status(), StatusCode::NO_CONTENT, "action={action}");
 
-        // let event_count: i64 = sqlx::query_scalar(
-        //     "SELECT count(*) FROM customer_consent_events WHERE user_id = $1 AND notice_id = $2",
-        // )
-        // .bind(user_id)
-        // .bind(notice_id)
-        // .fetch_one(&pool)
-        // .await
-        // .expect("count persisted consent events");
-        // assert_eq!(event_count, expected_events, "action={action}");
+        let event_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM customer_consent_events WHERE user_id = $1 AND notice_id = $2",
+        )
+        .bind(user_id)
+        .bind(notice_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count persisted consent events");
+        assert_eq!(event_count, expected_events, "action={action}");
     }
 
     let consent_state = request_with_headers(
@@ -912,7 +900,7 @@ async fn postgres_backed_auth_refresh_logout_profile_and_consent_flow() {
     assert_eq!(consent_state.status(), StatusCode::OK);
     let consent_state = json_body(consent_state).await;
     assert_eq!(consent_state[0]["action"], "withdrawn");
-    assert_eq!(consent_state[0]["version"], "test-v1");
+    assert_eq!(consent_state[0]["version"], "1.0");
 
     // --- Refresh rotation ----------------------------------------------------
     let refresh_response = request_with_headers(
