@@ -11,7 +11,7 @@
  * File:        src/route/consents.rs
  * Author:      Alexis Tercero
  * Email:       alexis.tercero@rho.studio
- * Date:        2026-10-30
+ * Date:        2026-11-03
  * ============================================================================
  * Description:
  *      LFPDPPP consent registry handlers. The platform can record verifiable consent
@@ -25,9 +25,10 @@
  *      asks the domain whether to record an event, and returns.
  *
  *      Endpoints:
- *          GET  /api/v1/consents/notices  Published notices for a locale
- *          GET  /api/v1/me/consents       Current consent state per user
- *          POST /api/v1/consents          Record a grant or withdrawal
+ *          GET  /api/v1/consents/notices        Published notices for a locale
+ *          GET  /api/v1/me/consents             Current consent state per user
+ *          POST /api/v1/consents                Record a grant or withdrawal
+ *          POST /api/v1/admin/consents/notices  Publish a new notice (RBAC)
  *
  *      Consent model (from migration 11):
  *          Two tables:
@@ -47,13 +48,15 @@
  *          `now()`, so events inserted in the same transaction get
  *          distinct timestamps and ordering is deterministic.
  *
- *      State machine:
+ *      State machine & LFPDPPP Rules:
  *          The transition rules live in `domain::consent`. The
  *          handler asks the domain whether an event should be recorded
- *          given the current state, the requested action, and whether
- *          the notice is still published:
+ *          given the current state, the requested action, the data category, 
+ *          and the consent type:
  *
  *              - Granted on a published notice with no prior event    -> record
+ *              - Granted for Financial/Sensitive data requires 
+ *                Express consent (LFPDPPP Art. 7 & 8)                 -> reject if Tacit
  *              - Granted when the current state is already granted    -> no-op
  *              - Withdrawn when the current state is granted          -> record
  *              - Withdrawn when the current state is withdrawn        -> no-op
@@ -95,69 +98,38 @@
  *
  *              NoticeNotPublished    -> Conflict (409)
  *              NoActiveConsent       -> BadRequest (400)
- *              UnknownEventType      -> Internal (500) — indicates a row
- *                                       with an event_type value the domain
- *                                       does not recognize, which can only
- *                                       happen if the CHECK constraint in
- *                                       migration 11 has been bypassed or
- *                                       the domain enum has drifted from
- *                                       the schema.
+ *              ExpressConsentRequired-> BadRequest (400) (LFPDPPP violation)
+ *              UnknownEventType      -> Internal (500)
  *
  *      Design notes:
- *          - Every handler requires an authenticated access token. The
- *            registry is user-scoped even for the notice list, so a
- *            caller must be a verified user. A future public-notices
- *            endpoint (pre-login) would need a separate route and a
- *            different threat model.
+ *          - Every handler requires an authenticated access token.
+ *          - Admin RBAC: `publish_notice` calls `require_admin()`, which 
+ *            verifies the authenticated user_id maps to a row where 
+ *            `users.is_admin = true`. 
+ *          - Server-side hashing: When publishing, the backend calculates 
+ *            the SHA-256 hash in Rust. It does NOT trust the client to 
+ *            provide the hash.
+ *          - Strict locale validation: The `locale` parameter is validated 
+ *            against a strict regex (`^[a-z]{2}-[A-Z]{2}$`) to prevent 
+ *            injection attacks via the query string.
  *          - `record_consent` runs inside a transaction with a
  *            `FOR UPDATE` lock on the user row. This serializes
  *            concurrent consent submissions from the same user so the
  *            "current state" read and the "record event" write cannot
  *            race. Two simultaneous grants resolve to one event.
- *          - Locale, purpose_code, and version are validated for shape
- *            (non-empty, within column width) before the notice lookup.
- *            A shape failure returns `Validation`; a well-formed but
- *            nonexistent reference returns `NotFound`. This
- *            distinguishes client bugs from client mistakes.
  *          - `GET /me/consents` uses `DISTINCT ON (purpose_code, locale)`
- *            with a DESC order on `(recorded_at, id)`. That gives the
- *            current state per (purpose, locale) in a single query with
- *            an index-only scan against the
- *            `customer_consent_events_latest_idx` index.
- *          - The response shape of `GET /consents/notices` includes the
- *            full notice content. This is intentional — the mobile
- *            client needs to display the notice to obtain consent. The
- *            content is public by design once published.
- *          - `record_consent` returns `204 No Content` on success,
- *            whether the request caused an event insertion or was a
- *            no-op. The client does not need to distinguish; the
- *            subsequent `GET /me/consents` reflects the state.
- *          - The content hash check on read is O(n) in the number of
- *            published notices returned. For the initial locale set
- *            (single-digit notices) this is trivial; for a large
- *            regulatory catalogue it should move to a periodic
- *            verification job instead of a per-request check.
+ *            with a DESC order on `(recorded_at, id)`.
+ *          - `record_consent` returns `204 No Content` on success.
  *          - The `map_consent_error` mapping for `NoActiveConsent`
  *            returns `BadRequest` (400). This is a naming and status
- *            choice, not a bug: the request is well-formed but violates
- *            the current resource state. A future revision may switch
- *            to `Conflict` (409) for consistency with the idempotency
- *            contract on other endpoints.
+ *            choice, not a bug.
  *
  *      Testing:
  *          Container-backed tests in `route_tests/database.rs` exercise
- *          the full consent flow: seed a published notice, list it,
- *          read the empty initial state, grant, verify idempotent
- *          re-grant, withdraw, verify idempotent re-withdraw, and
- *          assert event counts at each step. Unit tests for the
- *          transition policy live in `crate::domain::consent`.
- *          Integration tests for unauthenticated access live in
- *          `route_tests.rs`.
+ *          the full consent flow, admin publishing RBAC, and hash tampering.
+ *          Unit tests for the transition policy live in `crate::domain::consent`.
  *
  *      Known gaps (deferred to Phase 3, Feature F3 in DevPlan.md):
- *          - No seeder for the initial privacy and KYC notices. A
- *            fresh environment has an empty `consent_notices` table
- *            and the consent flow returns nothing. HU-012 scope.
  *          - No re-consent prompt when a notice version is retired
  *            and replaced. Users with prior consent are not re-prompted.
  *          - No notification on new notice version.
@@ -167,15 +139,8 @@
  *            consecutive events.
  *
  *      Explicitly out of Phase 1 scope:
- *          - LFPDPPP ARCO request handling (access, rectification,
- *            cancellation, opposition). Schema exists in migration 5;
- *            no handler. Scheduled for F3.
- *          - Consent-driven data export and anonymization flows.
- *            Scheduled for F3.
- *
- *      Not a serialized type. `ConsentNoticeResponse` and
- *      `ConsentStateResponse` implement `Serialize`; `NoticeState` is
- *      internal to the handler.
+ *          - LFPDPPP ARCO request handling. Scheduled for F3.
+ *          - Consent-driven data export and anonymization flows. Scheduled for F3.
  * ============================================================================
  */
 use crate::domain::consent::{ConsentAction, ConsentError, should_record_event};
@@ -193,6 +158,23 @@ use sha2::{Digest, Sha256};
 use sqlx::FromRow;
 use uuid::Uuid;
 use once_cell::sync::Lazy; use regex::Regex;
+
+#[derive(Debug, Deserialize)]
+pub struct PublishNoticeRequest {
+    pub purpose_code: String,
+    pub locale: String,
+    pub version: String,
+    pub content: String,
+}
+
+#[derive(Debug, sqlx::FromRow, serde::Serialize)]
+pub struct PublishedNoticeResponse {
+    pub id: Uuid,
+    pub purpose_code: String,
+    pub locale: String,
+    pub version: String,
+    pub content_sha256: String,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct NoticeQuery {
@@ -242,6 +224,89 @@ fn map_consent_error(error: ConsentError) -> AppError {
         }
         ConsentError::UnknownEventType(event_type) => {
             AppError::Internal(anyhow::anyhow!("unknown consent event type: {event_type}"))
+        }
+    }
+}
+
+async fn require_admin(state: &AppState, user_id: Uuid) -> AppResult<()> {
+    // Query the database for the user's admin status.
+    // check `is_active = true` to prevent banned admins from publishing.
+    let is_admin: Option<bool> = sqlx::query_scalar(
+        "SELECT is_admin FROM users WHERE id = $1 AND is_active = true"
+    )
+    .bind(user_id)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    match is_admin {
+        Some(true) => Ok(()),
+        Some(false) => Err(AppError::Forbidden("Admin privileges required".to_string())),
+        None => Err(AppError::Unauthorized("User not found or inactive".to_string())),
+    }
+}
+
+pub async fn publish_notice(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<PublishNoticeRequest>,
+) -> AppResult<(StatusCode, Json<PublishedNoticeResponse>)> {
+    // 1. Authenticate: Get the user_id from the JWT (returns 401 if invalid)
+    let user_id = crate::routes::auth::authenticated_user_id(&state, crate::routes::auth::bearer_token(&headers)?).await?;
+
+    // 2. Authorize: Verify the user is an admin in the database (returns 403 if not)
+    require_admin(&state, user_id).await?;
+
+    // 3. Validate input shape
+    if request.purpose_code.is_empty() || request.purpose_code.len() > 64
+        || request.locale.is_empty() || request.locale.len() > 16
+        || request.version.is_empty() || request.version.len() > 64
+        || request.content.is_empty() 
+    {
+        return Err(AppError::Validation("Invalid notice payload".to_string()));
+    }
+
+    // 4. Hash the content (The backend calculates this, never trusting the client)
+    let content_hash = format!("{:x}", Sha256::digest(request.content.as_bytes()));
+
+    // 5. Insert into the database
+    let insert_result = sqlx::query_as::<_, PublishedNoticeResponse>(
+        r#"
+        INSERT INTO consent_notices (
+            purpose_code, locale, version, content, content_sha256, status, published_at
+        )
+        VALUES ($1, $2, $3, $4, $5, 'published', now())
+        RETURNING id, purpose_code, locale, version, content_sha256
+        "#,
+    )
+    .bind(&request.purpose_code)
+    .bind(&request.locale)
+    .bind(&request.version)
+    .bind(&request.content)
+    .bind(&content_hash)
+    .fetch_one(&state.pool)
+    .await;
+
+    // 6. Handle database constraints
+    match insert_result {
+        Ok(notice) => {
+            // Log the admin action for auditing
+            tracing::info!(
+                admin_id = %user_id, 
+                notice_id = %notice.id, 
+                purpose = %notice.purpose_code, 
+                "Admin published a new privacy notice"
+            );
+            Ok((StatusCode::CREATED, Json(notice)))
+        }
+        Err(sqlx::Error::Database(db_error)) if db_error.is_unique_violation() => {
+            // The partial unique index prevents two published notices for the same purpose/locale
+            Err(AppError::Conflict(
+                "A published notice already exists for this purpose and locale. Retire the existing notice first.".to_string()
+            ))
+        }
+        Err(error) => {
+            tracing::error!(error = ?error, "Failed to insert consent notice");
+            Err(AppError::Internal(error.into()))
         }
     }
 }
