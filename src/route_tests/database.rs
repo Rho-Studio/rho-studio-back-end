@@ -767,24 +767,24 @@ async fn postgres_backed_auth_refresh_logout_profile_and_consent_flow() {
     .expect("seed verified test user");
 
     // --- Seed a published consent notice -------------------------------------
-    let notice_id = Uuid::new_v4();
-    let notice_content = "Integration-test privacy notice";
-    let notice_hash = format!("{:x}", Sha256::digest(notice_content.as_bytes()));
-    sqlx::query(
-        r#"
-        INSERT INTO consent_notices (
-            id, purpose_code, locale, version, content, content_sha256,
-            status, published_at
-        )
-        VALUES ($1, 'privacy', 'es-MX', 'test-v1', $2, $3, 'published', now())
-        "#,
-    )
-    .bind(notice_id)
-    .bind(notice_content)
-    .bind(notice_hash)
-    .execute(&pool)
-    .await
-    .expect("seed published test notice");
+    // let notice_id = Uuid::new_v4();
+    // let notice_content = "Integration-test privacy notice";
+    // let notice_hash = format!("{:x}", Sha256::digest(notice_content.as_bytes()));
+    // sqlx::query(
+    //     r#"
+    //     INSERT INTO consent_notices (
+    //         id, purpose_code, locale, version, content, content_sha256,
+    //         status, published_at
+    //     )
+    //     VALUES ($1, 'privacy-test', 'es-MX', 'test-v1', $2, $3, 'published', now())
+    //     "#,
+    // )
+    // .bind(notice_id)
+    // .bind(notice_content)
+    // .bind(notice_hash)
+    // .execute(&pool)
+    // .await
+    // .expect("seed published test notice");
 
     // --- Login (case-insensitive email lookup) -------------------------------
     let login_response = request_with_headers(
