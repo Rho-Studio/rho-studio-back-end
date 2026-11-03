@@ -870,7 +870,7 @@ async fn postgres_backed_auth_refresh_logout_profile_and_consent_flow() {
         let request_body = json!({
             "purpose_code": "privacy",
             "locale": "es-MX",
-            "version": "test-v1",
+            "version": "1.0",
             "action": action
         })
         .to_string();
