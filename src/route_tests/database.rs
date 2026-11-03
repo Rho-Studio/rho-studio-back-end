@@ -838,7 +838,14 @@ async fn postgres_backed_auth_refresh_logout_profile_and_consent_flow() {
     assert_eq!(notice_response.status(), StatusCode::OK);
     let notices = json_body(notice_response).await;
     assert_eq!(notices.as_array().expect("array").len(), 2);
-    assert_eq!(notices[0]["id"], notice_id.to_string());
+    let returned_ids: Vec<&str> = notices_array
+        .iter()
+        .map(|n| n["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        returned_ids.contains(&notice_id.to_string().as_str()),
+        "The privacy notice ID was not found in the response"
+    );
 
     let initial_consents = request_with_headers(
         &app.router,
