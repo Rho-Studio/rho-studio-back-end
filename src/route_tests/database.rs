@@ -837,6 +837,7 @@ async fn postgres_backed_auth_refresh_logout_profile_and_consent_flow() {
     .await;
     assert_eq!(notice_response.status(), StatusCode::OK);
     let notices = json_body(notice_response).await;
+    let notices_array = notices.as_array().expect("array");
     assert_eq!(notices.as_array().expect("array").len(), 2);
     let returned_ids: Vec<&str> = notices_array
         .iter()
