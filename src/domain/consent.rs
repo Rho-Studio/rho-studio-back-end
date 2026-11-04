@@ -11,7 +11,7 @@
  * File:        src/domain/consent.rs
  * Author:      Alexis Tercero
  * Email:       alexis.tercero@rho.studio
- * Date:        2026-11-03
+ * Date:        2026-11-04
  * ============================================================================
  * Description:
  *      Pure domain logic for the LFPDPPP consent registry. A state machine 
@@ -28,6 +28,7 @@
  *
  *      Public surface:
  *          ConsentAction         The two valid actions: 'Granted', 'Withdrawn'
+ *          ConsentType           The legal labels for consent: 'Express', 'Tacit'
  *          ConsentError          Domain errors returned by the transition
  *                                policy
  *          should_record_event() The transition predicate: given the
@@ -38,27 +39,38 @@
  *
  *      Transition table (exhaustive over the three inputs):
  *
- *          current    requested    notice published    outcome                     arm
- *          -------    ---------    ----------------    -------                     ---
- *          None       Granted      true                record                      arm 2
- *          None       Granted      false               reject: NoticeNotPublished  arm 3
- *          Granted    Granted      true                no-op                       arm 1
- *          Granted    Granted      false               no-op                       arm 1
- *          Withdrawn  Granted      true                record                      arm 2
- *          Withdrawn  Granted      false               reject: NoticeNotPublished  arm 3
- *          None       Withdrawn    (either)            reject: NoActiveConsent     arm 6
- *          Granted    Withdrawn    (either)            record                      arm 4
- *          Withdrawn  Withdrawn    (either)            no-op                       arm 5
+*          current    requested    high_risk    consent_type    notice published    outcome                                 arm
+ *          -------    ---------    ---------    ------------    ----------------    -------                                 ---
+ *          Granted    Granted      Any          Any             Any                 no-op (idempotent)                      arm 1
+ *          None       Granted      true         Tacit           Any                 reject: ExpressConsentRequired          arm 2
+ *          Withdrawn  Granted      true         Tacit           Any                 reject: ExpressConsentRequired          arm 2
+ *          None       Granted      false        Any             true                record                                  arm 3
+ *          None       Granted      true         Express         true                record                                  arm 3
+ *          Withdrawn  Granted      false        Any             true                record                                  arm 3
+ *          Withdrawn  Granted      true         Express         true                record                                  arm 3
+ *          None       Granted      false        Any             false               reject: NoticeNotPublished              arm 4
+ *          None       Granted      true         Express         false               reject: NoticeNotPublished              arm 4
+ *          Withdrawn  Granted      false        Any             false               reject: NoticeNotPublished              arm 4
+ *          Withdrawn  Granted      true         Express         false               reject: NoticeNotPublished              arm 4
+ *          Granted    Withdrawn    Any          Any             Any                 record                                  arm 5
+ *          Withdrawn  Withdrawn    Any          Any             Any                 no-op (idempotent)                      arm 6
+ *          None       Withdrawn    Any          Any             Any                 reject: NoActiveConsent                 arm 7
  *
- *      Arm ordering is load-bearing. The match arms are evaluated top
- *      to bottom, and the guard on arm 1 (`current == Granted`)
- *      fires before the publication guard on arm 3. The practical
- *      consequence: a repeated grant is a no-op even when the notice
- *      has since been retired. The prior grant is not retroactively
- *      invalidated by a change in publication state. The publication
- *      check only applies when the current state is not already
- *      Granted — i.e. on the first grant or on a re-grant after a
- *      withdrawal. Any change to arm order must be accompanied by a
+ *      Why the arm ordering matters:
+ *          1. Arm 1 (Idempotency) fires before anything else. If the user is already granted, 
+ *             the system returns `Ok(false)` immediately, ignoring whether the notice was 
+ *             later retired or if the request is missing an `Express` flag.
+ *          2. Arm 2 (LFPDPPP Art. 7) fires before the publication check. This guarantees that 
+ *             a request for KYC/Financial data with `Tacit` consent is rejected (400 Bad Request) 
+ *             even if the notice is currently published.
+ *          3. Arm 3 is the only "happy path" that returns `Ok(true)` for a new grant. It requires 
+ *             the notice to be published AND passes the LFPDPPP check (either low-risk, or high-risk with Express).
+ *          4. Arm 4 is the catch-all for `Granted`. If we reach this arm, the notice is unpublished.
+ *          5. Arms 5, 6, and 7 handle `Withdrawn`. Notice that they do not check `high_risk`, 
+ *             `consent_type`, or `notice published`. A user must always be able to revoke consent, 
+ *             even if the notice has been retired.
+ * 
+ *      Any change to arm order must be accompanied by a
  *      change to the test suite in this file.
  *
  *      Rationale for the rules:
@@ -70,6 +82,10 @@
  *            was recorded against a specific notice version at a
  *            specific time, and a later publication-state change does
  *            not invalidate it.
+ *          - A grant for high-risk data (e.g., financial or patrimonial) strictly 
+ *            requires Express consent. If the client submits Tacit consent for 
+ *            these purposes, the domain rejects it with `ExpressConsentRequired` 
+ *            to comply with LFPDPPP Article 7.
  *          - A repeated grant on the same notice is a no-op, not an
  *            error. Mobile clients retry on network failure, and a
  *            duplicate submission must not create a second event.
@@ -103,8 +119,8 @@
  *            notice status, then passes them in. This makes the state
  *            machine trivially unit-testable and keeps the domain free
  *            of infrastructure concerns.
- *          - `ConsentAction` derives `Copy`. The enum has two variants
- *            with no payload, so `Copy` is free.
+ *          - Both `ConsentAction` and `ConsentType` derives `Copy`. 
+ *            The enum has two variants with no payload, so `Copy` is free.
  *          - `ConsentError` derives `PartialEq` and `Eq`. Unit tests
  *            compare results directly with `assert_eq!`.
  *          - The transition predicate is a free function, not a method
@@ -123,9 +139,11 @@
  *            `ConsentError` is defined here because it describes a
  *            domain-level rejection, not a transport-level failure.
  *            The route layer translates it into `AppError`.
+*          - `ConsentError` derives `PartialEq` and `Eq`. Unit tests
+ *            compare results directly with `assert_eq!`.
  *
  *      Testing:
- *          Three unit tests in this file:
+ *          Four unit tests in this file:
  *
  *              grants_require_publication_and_repeated_grants_are_idempotent
  *                  Covers: (None, Granted, true), (Granted, Granted, true),
@@ -136,6 +154,9 @@
  *              database_event_types_round_trip
  *                  Covers: as_event_type and from_event_type for both variants
  *                          plus the unknown-value error path
+ *              lfpdp_art_7_requires_express_consent_for_high_risk_data
+ *                  Covers: rejecting Tacit consent for high-risk data, allowing 
+ *                          Express consent, and allowing Tacit for low-risk data.
  *
  *          The tests are pure: no database, no fixtures, no async
  *          runtime. Container-backed tests in
@@ -152,9 +173,9 @@
  *          - No time-bounded consent. A grant is valid until
  *            explicitly withdrawn; there is no notion of "consent
  *            valid for 12 months" that auto-revokes.
- *          - No conditional consent at the domain level. Purpose
- *            scoping is expressed by (purpose_code, locale) on the
- *            notice.
+ *          - No time-bounded consent. A grant is valid until explicitly 
+ *            withdrawn; there is no notion of "consent valid for 12 months" 
+ *            that auto-revokes.
  *          - No delegated consent (guardian on behalf of a minor).
  *          - No re-consent prompt when a notice version is retired
  *            and replaced. This is a workflow concern that lives
@@ -200,6 +221,15 @@ impl ConsentAction {
     }
 }
 
+/// The mechanism by which the user agreed (LFPDPPP Art. 7).
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsentType {
+    Express,
+    Tacit,
+}
+
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ConsentError {
     #[error("consent notice is not currently published")]
@@ -208,17 +238,30 @@ pub enum ConsentError {
     NoActiveConsent,
     #[error("unknown consent event type: {0}")]
     UnknownEventType(String),
+    #[error("Financial or sensitive data requires express consent (LFPDPPP Art. 7)")]
+    ExpressConsentRequired,
 }
 
 pub fn should_record_event(
     current: Option<ConsentAction>,
     requested: ConsentAction,
     notice_is_published: bool,
+    is_high_risk_purpose: bool,
+    consent_type: ConsentType,
 ) -> Result<bool, ConsentError> {
     match requested {
+        // 1. Idempotency: If already granted, it's a no-op regardless of other factors. 
         ConsentAction::Granted if current == Some(ConsentAction::Granted) => Ok(false),
+        // 2. LFPDPPP Art. 7: High-risk purposes (Financial/KYC) strictly require Express consent.
+        ConsentAction::Granted 
+            if is_high_risk_purpose && consent_type != ConsentType::Express => 
+        {
+            Err(ConsentError::ExpressConsentRequired)
+        }
+        // 3. Standard Grant: Requires published notice.
         ConsentAction::Granted if notice_is_published => Ok(true),
         ConsentAction::Granted => Err(ConsentError::NoticeNotPublished),
+        // 4. Withdrawal Logic (No restrictions on consent type or publication status for revocation).
         ConsentAction::Withdrawn if current == Some(ConsentAction::Granted) => Ok(true),
         ConsentAction::Withdrawn if current == Some(ConsentAction::Withdrawn) => Ok(false),
         ConsentAction::Withdrawn => Err(ConsentError::NoActiveConsent),
@@ -227,20 +270,20 @@ pub fn should_record_event(
 
 #[cfg(test)]
 mod tests {
-    use super::{ConsentAction, ConsentError, should_record_event};
+    use super::*;
 
     #[test]
     fn grants_require_publication_and_repeated_grants_are_idempotent() {
         assert_eq!(
-            should_record_event(None, ConsentAction::Granted, true),
+            should_record_event(None, ConsentAction::Granted, true, false, ConsentType::Express),
             Ok(true)
         );
         assert_eq!(
-            should_record_event(Some(ConsentAction::Granted), ConsentAction::Granted, true),
+            should_record_event(Some(ConsentAction::Granted), ConsentAction::Granted, true, false, ConsentType::Express),
             Ok(false)
         );
         assert_eq!(
-            should_record_event(None, ConsentAction::Granted, false),
+            should_record_event(None, ConsentAction::Granted, false, false, ConsentType::Express),
             Err(ConsentError::NoticeNotPublished)
         );
     }
@@ -251,7 +294,9 @@ mod tests {
             should_record_event(
                 Some(ConsentAction::Granted),
                 ConsentAction::Withdrawn,
-                false
+                false,
+                false,
+                ConsentType::Tacit
             ),
             Ok(true)
         );
@@ -259,31 +304,45 @@ mod tests {
             should_record_event(
                 Some(ConsentAction::Withdrawn),
                 ConsentAction::Withdrawn,
-                false
+                false,
+                false,
+                ConsentType::Tacit        
             ),
             Ok(false)
         );
         assert_eq!(
-            should_record_event(None, ConsentAction::Withdrawn, false),
+            should_record_event(None, ConsentAction::Withdrawn, false, false, ConsentType::Tacit),
             Err(ConsentError::NoActiveConsent)
         );
     }
 
     #[test]
     fn database_event_types_round_trip() {
-        assert_eq!(
-            ConsentAction::from_event_type("granted"),
-            Ok(ConsentAction::Granted)
-        );
-        assert_eq!(
-            ConsentAction::from_event_type("withdrawn"),
-            Ok(ConsentAction::Withdrawn)
-        );
-        assert_eq!(
-            ConsentAction::from_event_type("invalid"),
-            Err(ConsentError::UnknownEventType("invalid".to_string()))
-        );
+        assert_eq!(ConsentAction::from_event_type("granted"), Ok(ConsentAction::Granted));
+        assert_eq!(ConsentAction::from_event_type("withdrawn"), Ok(ConsentAction::Withdrawn));
+        assert_eq!(ConsentAction::from_event_type("invalid"), Err(ConsentError::UnknownEventType("invalid".to_string())));
         assert_eq!(ConsentAction::Granted.as_event_type(), "granted");
         assert_eq!(ConsentAction::Withdrawn.as_event_type(), "withdrawn");
+    }
+
+     #[test]
+    fn lfpdp_art_7_requires_express_consent_for_high_risk_data() {
+        // Attempting to grant high-risk data with Tacit consent must fail
+        assert_eq!(
+            should_record_event(None, ConsentAction::Granted, true, true, ConsentType::Tacit),
+            Err(ConsentError::ExpressConsentRequired)
+        );
+
+        // Attempting to grant high-risk data with Express consent succeeds
+        assert_eq!(
+            should_record_event(None, ConsentAction::Granted, true, true, ConsentType::Express),
+            Ok(true)
+        );
+
+        // Low-risk data can still use Tacit consent
+        assert_eq!(
+            should_record_event(None, ConsentAction::Granted, true, false, ConsentType::Tacit),
+            Ok(true)
+        );
     }
 }
