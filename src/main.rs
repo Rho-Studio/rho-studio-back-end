@@ -11,7 +11,7 @@
  * File:        main.rs
  * Author:      Alexis Tercero
  * Email:       alexis.tercero@rho.studio
- * Date:        2026-10-08
+ * Date:        2026-11-03
  * ============================================================================
  * Description:
  *      Binary entry point and application composition root. Everything the
@@ -261,6 +261,7 @@ fn build_app(state: AppState, config: &AppConfig) -> anyhow::Result<Router> {
         .route("/api/v1/consents/notices",get(routes::consents::get_published_notices))
         .route("/api/v1/me/consents",get(routes::consents::get_my_consents))
         .route("/api/v1/consents", post(routes::consents::record_consent))
+        .route("/api/v1/admin/consents/notices",post(routes::consents::publish_notice))
         .layer(trace)
         .layer(cors)
         .layer(CompressionLayer::new())
