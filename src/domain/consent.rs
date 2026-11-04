@@ -11,23 +11,23 @@
  * File:        src/domain/consent.rs
  * Author:      Alexis Tercero
  * Email:       alexis.tercero@rho.studio
- * Date:        2026-10-13
+ * Date:        2026-11-03
  * ============================================================================
  * Description:
- *      Pure domain logic for the LFPDPPP consent registry. This module is
- *      the state machine that the transport layer (`routes/consents.rs`)
- *      consults before inserting an event. It has no dependency on Axum,
- *      SQLx, Redis, or any provider SDK. The rule that governs whether a
+ *      Pure domain logic for the LFPDPPP consent registry. A state machine 
+ *      that the transport layer (`routes/consents.rs`) consults before 
+ *      inserting an event. It has no dependency on Axum, SQLx, Redis, 
+ *      or any provider SDK. The rule that governs whether a
  *      consent transition is allowed lives here and nowhere else.
  *
- *      Consent is modeled as an append-only stream of events per
- *      (user, notice). The "current state" is not a column — it is the
+ *      Consent is an append-only stream of events per (user, notice). 
+ *      The "current state" is not a column — it is the
  *      latest event by (recorded_at DESC, id DESC). This module defines
  *      what counts as a valid transition between two states and what
  *      counts as a no-op.
  *
  *      Public surface:
- *          ConsentAction         The two valid actions: Granted, Withdrawn
+ *          ConsentAction         The two valid actions: 'Granted', 'Withdrawn'
  *          ConsentError          Domain errors returned by the transition
  *                                policy
  *          should_record_event() The transition predicate: given the

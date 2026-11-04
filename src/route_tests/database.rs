@@ -793,10 +793,7 @@ async fn postgres_backed_auth_refresh_logout_profile_and_consent_flow() {
     assert_eq!(login_response.status(), StatusCode::OK);
     let login = json_body(login_response).await;
     let access_token = login["access_token"].as_str().expect("access token").to_string();
-    let refresh_token = login["refresh_token"]
-        .as_str()
-        .expect("refresh token")
-        .to_string();
+    let refresh_token = login["refresh_token"].as_str().expect("refresh token").to_string();
     assert_eq!(login["user"]["id"], user_id.to_string());
     assert_eq!(login["user"]["email"], "route-test@example.test");
 
