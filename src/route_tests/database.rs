@@ -868,16 +868,21 @@ async fn postgres_backed_auth_refresh_logout_profile_and_consent_flow() {
             "purpose_code": "privacy",
             "locale": "es-MX",
             "version": "1.0",
-            "action": action
+            "action": action,
+            "consent_type": "express"
         })
         .to_string();
+        
         let response = request_with_headers(
             &app.router,
             axum::http::Method::POST,
             "/api/v1/consents",
             Some(&request_body),
-            false,
-            &[("authorization", &bearer)],
+            true, 
+            &[
+                ("authorization", &bearer),
+                ("user-agent", "Integration-Test-Agent")
+            ],
         )
         .await;
         assert_eq!(response.status(), StatusCode::NO_CONTENT, "action={action}");
@@ -891,6 +896,21 @@ async fn postgres_backed_auth_refresh_logout_profile_and_consent_flow() {
         .await
         .expect("count persisted consent events");
         assert_eq!(event_count, expected_events, "action={action}");
+        
+        if action == "granted" && expected_events == 1 {
+            let (ip, ua, ctype): (String, String, String) = sqlx::query_as(
+                "SELECT host(ip_address), user_agent, consent_type FROM customer_consent_events WHERE user_id = $1 AND notice_id = $2 LIMIT 1"
+            )
+            .bind(user_id)
+            .bind(notice_id)
+            .fetch_one(&pool)
+            .await
+            .expect("fetch consent audit evidence");
+            
+            assert_eq!(ip, "127.0.0.1"); // Mocked ConnectInfo IP
+            assert_eq!(ua, "Integration-Test-Agent");
+            assert_eq!(ctype, "express");
+        }
     }
 
     let consent_state = request_with_headers(

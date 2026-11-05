@@ -603,8 +603,10 @@ async fn post_consent_requires_authentication() {
         &app.router,
         Method::POST,
         "/api/v1/consents",
-        Some(r#"{"purpose_code":"privacy","locale":"es-MX","version":"1","action":"granted"}"#),
-        false,
+        Some(r#"{"purpose_code":"privacy",
+                      "locale":"es-MX","version":"1",
+                      "action":"granted","consent_type":"express"}"#),
+        true,
         StatusCode::UNAUTHORIZED,
     )
     .await;
