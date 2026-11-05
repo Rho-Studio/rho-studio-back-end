@@ -414,7 +414,7 @@ pub async fn record_consent(
         peer,
         &headers,
         &state.config.auth_rate_limits.trusted_proxy_cidrs,
-    );
+    ).to_string();
     
     let user_agent = headers
         .get(USER_AGENT)
@@ -489,7 +489,7 @@ pub async fn record_consent(
         .bind(user_id)
         .bind(notice.id)
         .bind(request.action.as_event_type())
-        .bind(ip_address.to_string())
+        .bind(ip_address)
         .bind(user_agent)
         .bind(request.consent_type.as_str())
         .execute(&mut *transaction)
