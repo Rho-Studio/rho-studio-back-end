@@ -11,7 +11,7 @@
  * File:        src/route/consents.rs
  * Author:      Alexis Tercero
  * Email:       alexis.tercero@rho.studio
- * Date:        2026-11-03
+ * Date:        2026-11-04
  * ============================================================================
  * Description:
  *      LFPDPPP consent registry handlers. The platform can record verifiable consent
@@ -21,8 +21,9 @@
  *      Consent transition policy is separated into `crate::domain::consent`
  *      so that the state machine is testable without a database and is
  *      not entangled with HTTP concerns. This module is the transport
- *      layer: it authenticates, validates shape, opens a transaction,
- *      asks the domain whether to record an event, and returns.
+ *      layer: it authenticates, validates shape, captures audit evidence,
+ *      opens a transaction, asks the domain whether to record an event, 
+ *      and returns.
  *
  *      Endpoints:
  *          GET  /api/v1/consents/notices        Published notices for a locale
@@ -39,8 +40,9 @@
  *                                       most one published notice per
  *                                       (purpose_code, locale).
  *              customer_consent_events  Append-only grant/withdraw evidence
- *                                       per (user_id, notice_id). UPDATE
- *                                       and DELETE are blocked by trigger.
+ *                                       Includes audit fields: ip_address,
+ *                                       user_agent, and consent_type (express/tacit).
+ *                                       UPDATEand DELETE are blocked by trigger.
  *
  *          Current consent state for a (purpose, locale) pair is the
  *          latest event by (recorded_at DESC, id DESC). The
@@ -50,9 +52,9 @@
  *
  *      State machine & LFPDPPP Rules:
  *          The transition rules live in `domain::consent`. The
- *          handler asks the domain whether an event should be recorded
- *          given the current state, the requested action, the data category, 
- *          and the consent type:
+ *          handler determines if a purpose is "high risk" (e.g., KYC,
+ *          Financial) and passes the user's requested `consent_type`
+ *          to the domain layer:
  *
  *              - Granted on a published notice with no prior event    -> record
  *              - Granted for Financial/Sensitive data requires 
@@ -112,6 +114,9 @@
  *          - Strict locale validation: The `locale` parameter is validated 
  *            against a strict regex (`^[a-z]{2}-[A-Z]{2}$`) to prevent 
  *            injection attacks via the query string.
+ *          - Audit Evidence: `record_consent` extracts the client IP
+ *            (via `ConnectInfo` and trusted proxy logic) and `User-Agent`.
+ *            This non-repudiation evidence is stored in the event log.
  *          - `record_consent` runs inside a transaction with a
  *            `FOR UPDATE` lock on the user row. This serializes
  *            concurrent consent submissions from the same user so the
@@ -126,8 +131,9 @@
  *
  *      Testing:
  *          Container-backed tests in `route_tests/database.rs` exercise
- *          the full consent flow, admin publishing RBAC, and hash tampering.
- *          Unit tests for the transition policy live in `crate::domain::consent`.
+ *          the full consent flow, admin publishing RBAC, hash tampering,
+ *          and LFPDPPP Express Consent enforcement. Unit tests for the 
+ *          transition policy live in `crate::domain::consent`.
  *
  *      Known gaps (deferred to Phase 3, Feature F3 in DevPlan.md):
  *          - No re-consent prompt when a notice version is retired
@@ -143,19 +149,21 @@
  *          - Consent-driven data export and anonymization flows. Scheduled for F3.
  * ============================================================================
  */
-use crate::domain::consent::{ConsentAction, ConsentError, should_record_event};
+use crate::domain::consent::{ConsentAction, ConsentError, 
+                            should_record_event, ConsentType};
 use crate::error::{AppError, AppResult};
 use crate::routes::auth;
 use crate::state::AppState;
 use axum::{
     Json,
-    extract::{Query, State},
-    http::{HeaderMap, StatusCode},
+    extract::{ConnectInfo,Query, State},
+    http::{HeaderMap, StatusCode, header::USER_AGENT}
 };
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::FromRow;
+use std::net::SocketAddr;
 use uuid::Uuid;
 use once_cell::sync::Lazy; use regex::Regex;
 
@@ -187,6 +195,7 @@ pub struct ConsentRequest {
     locale: String,
     version: String,
     action: ConsentAction,
+    consent_type: ConsentType, //LFPDPPP Art.7
 }
 
 #[derive(Debug, FromRow, Serialize)]
@@ -224,6 +233,9 @@ fn map_consent_error(error: ConsentError) -> AppError {
         }
         ConsentError::UnknownEventType(event_type) => {
             AppError::Internal(anyhow::anyhow!("unknown consent event type: {event_type}"))
+        }
+        ConsentError::ExpressConsentRequired => {
+            AppError::BadRequest("Sensitive data requires express consent (LFPDPPP Art.7)".to_string())
         }
     }
 }
@@ -380,6 +392,7 @@ pub async fn get_my_consents(
 
 pub async fn record_consent(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(request): Json<ConsentRequest>,
 ) -> AppResult<StatusCode> {
@@ -396,6 +409,18 @@ pub async fn record_consent(
         ));
     }
 
+    //Extract Audit Evidence
+    let ip_address = auth::client_ip(
+        peer,
+        &headers,
+        &state.config.auth_rate_limits.trusted_proxy_cidrs,
+    )
+    .to_string();
+    
+    let user_agent = headers
+        .get(USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+
     let mut transaction = state.pool.begin().await?;
     let active_user = sqlx::query_scalar::<_, Uuid>(
         "SELECT id FROM users WHERE id = $1 AND is_active = true AND email_verified = true FOR UPDATE",
@@ -403,6 +428,7 @@ pub async fn record_consent(
     .bind(user_id)
     .fetch_optional(&mut *transaction)
     .await?;
+
     if active_user.is_none() {
         return Err(AppError::Unauthorized("Authentication failed".to_string()));
     }
@@ -439,16 +465,34 @@ pub async fn record_consent(
     .map(|result| result.map_err(map_consent_error))
     .transpose()?;
 
-    let should_record =
-        should_record_event(current_action, request.action, notice.status == "published")
-            .map_err(map_consent_error)?;
+    //Determine Risk Level (KYC and Financial data are high risk)
+    let is_high_risk = matches!(
+        request.purpose_code.as_str(), 
+        "kyc_verification" | "financial_data"
+    );
+
+    let should_record = should_record_event(
+        current_action,
+        request.action,
+        notice.status == "published",
+        is_high_risk,
+        request.consent_type,
+    ).map_err(map_consent_error)?;
+
     if should_record {
         sqlx::query(
-            "INSERT INTO customer_consent_events (user_id, notice_id, event_type) VALUES ($1, $2, $3)",
+            r#"
+            INSERT INTO customer_consent_events 
+            (user_id, notice_id, event_type, ip_address, user_agent, consent_type) 
+            VALUES ($1, $2, $3, $4, $5, $6)
+            "#,
         )
         .bind(user_id)
         .bind(notice.id)
         .bind(request.action.as_event_type())
+        .bind(ip_address)
+        .bind(user_agent)
+        .bind(request.consent_type.as_str())
         .execute(&mut *transaction)
         .await?;
     }

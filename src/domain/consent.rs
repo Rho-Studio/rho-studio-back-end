@@ -31,11 +31,11 @@
  *          ConsentType           The legal labels for consent: 'Express', 'Tacit'
  *          ConsentError          Domain errors returned by the transition
  *                                policy
- *          should_record_event() The transition predicate: given the
- *                                current state, the requested action,
+ *          should_record_event() The transition predicate: given the current
+ *                                state, the requested action, whether the
+ *                                purpose is high-risk, the consent type,
  *                                and whether the notice is published,
- *                                decide whether to append an event,
- *                                no-op, or reject.
+ *                                decide whether to append an event, no-op, or reject.
  *
  *      Transition table (exhaustive over the three inputs):
  *
@@ -229,6 +229,14 @@ pub enum ConsentType {
     Tacit,
 }
 
+impl ConsentType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Express => "express",
+            Self::Tacit => "tacit",
+        }
+    }
+}
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ConsentError {

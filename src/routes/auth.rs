@@ -11,7 +11,7 @@
  * File:        src/routes/auth.rs
  * Author:      Alexis Tercero
  * Email:       alexis.tercero@rho.studio
- * Date:        2026-10-12
+ * Date:        2026-11-04
  * ============================================================================
  * Description:
  *      Authentication and session management handlers. Implements the
@@ -353,7 +353,7 @@ fn rate_limit_key(action: &str, subject: &str) -> String {
     format!("rho-studio-fintech:rate-limit:{action}:{digest:x}")
 }
 
-fn client_ip(peer: SocketAddr, headers: &HeaderMap, trusted_proxies: &[ipnet::IpNet]) -> IpAddr {
+pub(super) fn client_ip(peer: SocketAddr, headers: &HeaderMap, trusted_proxies: &[ipnet::IpNet]) -> IpAddr {
     let peer_ip = peer.ip();
     if !trusted_proxies
         .iter()
