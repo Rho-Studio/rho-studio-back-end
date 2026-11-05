@@ -483,7 +483,7 @@ pub async fn record_consent(
             r#"
             INSERT INTO customer_consent_events 
             (user_id, notice_id, event_type, ip_address, user_agent, consent_type) 
-            VALUES ($1, $2, $3, $4, $5, $6)
+            VALUES ($1, $2, $3, $4::inet, $5, $6)
             "#,
         )
         .bind(user_id)
