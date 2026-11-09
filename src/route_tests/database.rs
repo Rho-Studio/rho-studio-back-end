@@ -947,6 +947,59 @@ async fn postgres_backed_get_notices_excludes_drafts() {
     );
 }
 
+#[tokio::test]
+async fn postgres_backed_get_notices_rejects_tampered_content() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+
+    // 1. Setup: Seed a regular user and login
+    let (_user_id, access_token, _refresh_token) = seed_and_login(&app, &pool).await;
+    let bearer = format!("Bearer {}", access_token);
+
+    // 2. Tamper with the DB (bypassing the trigger)
+    // We must temporarily disable the trigger to modify the content without updating the hash.
+    sqlx::query("ALTER TABLE consent_notices DISABLE TRIGGER consent_notices_protect_content")
+        .execute(&pool)
+        .await
+        .expect("failed to disable trigger");
+
+    sqlx::query(
+        "UPDATE consent_notices 
+         SET content = 'TAMPERED CONTENT: We are now selling your data to third parties.' 
+         WHERE purpose_code = 'privacy' AND locale = 'es-MX'"
+    )
+    .execute(&pool)
+    .await
+    .expect("failed to tamper with content");
+
+    sqlx::query("ALTER TABLE consent_notices ENABLE TRIGGER consent_notices_protect_content")
+        .execute(&pool)
+        .await
+        .expect("failed to re-enable trigger");
+
+    // 3. Act: Fetch the notices
+    let response = request_with_headers(
+        &app.router,
+        axum::http::Method::GET,
+        "/api/v1/consents/notices?locale=es-MX",
+        None,
+        false,
+        &[("authorization", &bearer)],
+    )
+    .await;
+
+    // 4. Assert 500 Internal Server Error
+    assert_eq!(
+        response.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "The handler must detect the hash mismatch and refuse to serve the tampered text"
+    );
+
+    // 5. Assert the response body is opaque (does not leak the tampered content or DB details)
+    let body = json_body(response).await;
+    assert_eq!(body["error"]["code"], "INTERNAL_ERROR");
+    assert_eq!(body["error"]["message"], "Internal server error");
+}
+
 /*---------------------------------------------------------------------------
 *   me route - unverifed users cant see info
 * ---------------------------------------------------------------------------*/
