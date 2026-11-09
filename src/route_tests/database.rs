@@ -758,7 +758,7 @@ async fn postgres_backed_publish_notice_succeeds_for_admin() {
 }
 
 // ---------------------------------------------------------------------------
-// Notices Retrieval (Defaults & Validation)
+// Notices Retrieval (Defaults, Validation, filtering)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -796,6 +796,71 @@ async fn postgres_backed_get_notices_defaults_to_es_mx() {
             "Default fallback must return es-MX notices"
         );
     }
+}
+
+#[tokio::test]
+async fn postgres_backed_get_notices_excludes_drafts() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+
+    // 1. Setup: Seed a regular user and login to get a valid Bearer token
+    let (_user_id, access_token, _refresh_token) = seed_and_login(&app, &pool).await;
+    let bearer = format!("Bearer {}", access_token);
+
+    // 2. Seed a DRAFT notice directly into the database.
+    // We must generate a valid hash to bypass the `protect_consent_notice()` trigger.
+    let draft_content = "This is an unreviewed draft privacy notice. It should not be shown to users.";
+    let draft_hash = format!("{:x}", Sha256::digest(draft_content.as_bytes()));
+    let draft_id = Uuid::new_v4();
+
+    sqlx::query(
+        "INSERT INTO consent_notices (id, purpose_code, locale, version, content, content_sha256, status) 
+         VALUES ($1, 'marketing', 'es-MX', '1.0', $2, $3, 'draft')"
+    )
+    .bind(draft_id)
+    .bind(draft_content)
+    .bind(draft_hash)
+    .execute(&pool)
+    .await
+    .expect("failed to seed draft notice");
+
+    // Note: Migration 15 seeds two PUBLISHED notices (privacy and kyc_verification) automatically.
+    // So the DB currently has: 2 published, 1 draft.
+
+    // 3. Act: Fetch notices for es-MX
+    let response = request_with_headers(
+        &app.router,
+        axum::http::Method::GET,
+        "/api/v1/consents/notices?locale=es-MX",
+        None,
+        false,
+        &[("authorization", &bearer)],
+    )
+    .await;
+
+    // 4. Assert 200 OK
+    assert_eq!(response.status(), StatusCode::OK);
+    
+    // 5. Assert Draft is Filtered Out
+    let body = json_body(response).await;
+    let notices_array = body.as_array().expect("response should be a JSON array");
+
+    // The length should be exactly 2, matching the two seeded PUBLISHED notices.
+    assert_eq!(
+        notices_array.len(), 
+        2, 
+        "Should only return the 2 published notices, filtering out the draft"
+    );
+
+    // Defense in depth: explicitly check that the draft's UUID is not in the response
+    let returned_ids: Vec<&str> = notices_array
+        .iter()
+        .map(|n| n["id"].as_str().unwrap())
+        .collect();
+
+    assert!(
+        !returned_ids.contains(&draft_id.to_string().as_str()),
+        "The draft notice ID must never be exposed to the client"
+    );
 }
 
 /*---------------------------------------------------------------------------
