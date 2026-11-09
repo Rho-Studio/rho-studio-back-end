@@ -11,7 +11,7 @@
  * File:        route_tests/database.rs
  * Author:      Alexis Tercero
  * Email:       alexis.tercero@rho.studio
- * Date:        2026-10-23
+ * Date:        2026-11-09
  * ============================================================================
  * Description:
  *      Container-backed integration tests for the authentication and
@@ -642,6 +642,119 @@ async fn postgres_backed_refresh_rejects_access_token_confusion() {
     .unwrap();
     
     assert_eq!(active_tokens, 1, "Token type confusion should fail before touching the DB");
+}
+
+// ---------------------------------------------------------------------------
+// Admin Notice Publishing (RBAC)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn postgres_backed_publish_notice_forbids_regular_user() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+
+    // 1. Setup: Seed a regular user (is_admin defaults to FALSE in the DB) and login
+    let (_user_id, access_token, _refresh_token) = seed_and_login(&app, &pool).await;
+    let bearer = format!("Bearer {}", access_token);
+
+    // 2. Prepare a valid notice payload
+    let new_notice_payload = json!({
+        "purpose_code": "marketing",
+        "locale": "es-MX",
+        "version": "1.0",
+        "content": "Aviso de privacidad para marketing y promociones..."
+    })
+    .to_string();
+
+    // 3. Act: Attempt to publish as a regular user
+    let response = request_with_headers(
+        &app.router,
+        axum::http::Method::POST,
+        "/api/v1/admin/consents/notices",
+        Some(&new_notice_payload),
+        false, 
+        &[("authorization", &bearer)],
+    )
+    .await;
+
+    // 4. Assert 403 Forbidden
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "Crucial: A valid JWT with is_admin = false must be rejected"
+    );
+
+    // 5. Verify the notice was NOT inserted into the database
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM consent_notices WHERE purpose_code = 'marketing'"
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    
+    assert_eq!(count, 0, "No notice should be inserted when RBAC fails");
+}
+
+
+#[tokio::test]
+async fn postgres_backed_publish_notice_succeeds_for_admin() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+
+    // 1. Setup: Seed a regular user and login
+    let (user_id, access_token, _refresh_token) = seed_and_login(&app, &pool).await;
+    
+    // 2. Elevate user to admin directly in the database
+    sqlx::query("UPDATE users SET is_admin = TRUE WHERE id = $1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("failed to elevate user to admin");
+
+    let bearer = format!("Bearer {}", access_token);
+
+    // 3. Prepare a valid notice payload
+    let content = "Aviso de privacidad integral para términos y condiciones.";
+    let new_notice_payload = json!({
+        "purpose_code": "terms_and_conditions",
+        "locale": "es-MX",
+        "version": "1.0",
+        "content": content
+    })
+    .to_string();
+
+    // 4. Act: Attempt to publish as an admin
+    let response = request_with_headers(
+        &app.router,
+        axum::http::Method::POST,
+        "/api/v1/admin/consents/notices",
+        Some(&new_notice_payload),
+        false,
+        &[("authorization", &bearer)],
+    )
+    .await;
+
+    // 5. Assert 201 Created
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "Admin users must be able to publish notices"
+    );
+
+    let body = json_body(response).await;
+    assert_eq!(body["purpose_code"], "terms_and_conditions");
+    
+    // 6. Verify the hash was generated correctly in Rust
+    let expected_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+    assert_eq!(body["content_sha256"], expected_hash);
+
+    // 7. Verify it was persisted in the database
+    let db_hash: String = sqlx::query_scalar(
+        "SELECT content_sha256 FROM consent_notices WHERE purpose_code = 'terms_and_conditions'"
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("Admin published notice should exist in DB");
+    
+    assert_eq!(db_hash, expected_hash);
 }
 
 /*---------------------------------------------------------------------------
