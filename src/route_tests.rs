@@ -569,6 +569,34 @@ async fn get_me_rejects_malformed_authorization_header() {
 }
 
 #[tokio::test]
+async fn post_admin_consents_notices_requires_auth() {
+    let app = test_app().await;
+    
+    // A valid shaped payload
+    let body = r#"{
+        "purpose_code": "test_notice",
+        "locale": "es-MX",
+        "version": "1.0",
+        "content": "TEST SUITE: post_admin_consents_notices_requires_auth"
+    }"#;
+
+    let response = request(
+        &app.router,
+        Method::POST,
+        "/api/v1/admin/consents/notices",
+        Some(body),
+        false, 
+    )
+    .await;
+
+    assert_eq!(
+        response.status(), 
+        StatusCode::UNAUTHORIZED,
+        "Missing bearer token must return 401 before hitting the database"
+    );
+}
+
+#[tokio::test]
 async fn get_consent_notices_requires_authentication() {
     let app = test_app().await;
     assert_status(
