@@ -645,7 +645,7 @@ async fn postgres_backed_refresh_rejects_access_token_confusion() {
 }
 
 // ---------------------------------------------------------------------------
-// Admin Notice Publishing (RBAC)
+// Admin Notice Publishing (RBAC and DB constraints)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -755,6 +755,90 @@ async fn postgres_backed_publish_notice_succeeds_for_admin() {
     .expect("Admin published notice should exist in DB");
     
     assert_eq!(db_hash, expected_hash);
+}
+
+#[tokio::test]
+async fn postgres_backed_publish_duplicate_published_notice_fails() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+
+    // 1. Setup: Seed a regular user, login, and elevate to admin
+    let (user_id, access_token, _refresh_token) = seed_and_login(&app, &pool).await;
+    
+    sqlx::query("UPDATE users SET is_admin = TRUE WHERE id = $1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("failed to elevate user to admin");
+
+    let bearer = format!("Bearer {}", access_token);
+
+    // 2. Successfully publish a notice for 'marketing' / 'es-MX'
+    let first_payload = json!({
+        "purpose_code": "marketing",
+        "locale": "es-MX",
+        "version": "1.0",
+        "content": "Aviso de privacidad para marketing v1.0"
+    }).to_string();
+
+    let first_response = request_with_headers(
+        &app.router,
+        axum::http::Method::POST,
+        "/api/v1/admin/consents/notices",
+        Some(&first_payload),
+        false,
+        &[("authorization", &bearer)],
+    )
+    .await;
+
+    assert_eq!(first_response.status(), StatusCode::CREATED, "First notice should publish successfully");
+
+    // 3. Attempt to publish a DIFFERENT version for the SAME purpose and locale
+    // The DB has a partial unique index: `consent_notices_one_published_per_purpose_locale`
+    let duplicate_payload = json!({
+        "purpose_code": "marketing",
+        "locale": "es-MX",
+        "version": "2.0", // Different version, but same purpose/locale
+        "content": "Aviso de privacidad para marketing v2.0"
+    }).to_string();
+
+    let duplicate_response = request_with_headers(
+        &app.router,
+        axum::http::Method::POST,
+        "/api/v1/admin/consents/notices",
+        Some(&duplicate_payload),
+        false,
+        &[("authorization", &bearer)],
+    )
+    .await;
+
+    // 4. Assert 409 Conflict
+    assert_eq!(
+        duplicate_response.status(),
+        StatusCode::CONFLICT,
+        "Partial unique index must prevent multiple active notices for the same purpose/locale"
+    );
+
+    // 5. Verify the Database State
+    // There should only be ONE published notice for 'marketing' / 'es-MX', and it should be version 1.0
+    let published_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM consent_notices 
+         WHERE purpose_code = 'marketing' AND locale = 'es-MX' AND status = 'published'"
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(published_count, 1, "There should only be one published notice in the DB");
+
+    let active_version: String = sqlx::query_scalar(
+        "SELECT version FROM consent_notices 
+         WHERE purpose_code = 'marketing' AND locale = 'es-MX' AND status = 'published'"
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(active_version, "1.0", "The active version must still be the first published one");
 }
 
 // ---------------------------------------------------------------------------

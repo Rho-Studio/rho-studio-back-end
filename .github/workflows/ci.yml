@@ -1,4 +1,4 @@
-name: CI Rurst::FAPI::Rho.Studio®
+name: CI Rust::FAPI::Rho.Studio®
 
 on:
   push:

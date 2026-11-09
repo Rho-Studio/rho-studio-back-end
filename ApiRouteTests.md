@@ -50,6 +50,7 @@ Boots the full router via `build_app` with the following substitutes:
 | `POST /api/v1/auth/logout` | `post_auth_logout_rejects_malformed_json` | Missing required `refresh_token` field returns `422` |
 | `POST /api/v1/auth/logout-all` | `post_auth_logout_all_requires_authentication` | Missing bearer token returns `401` |
 | `GET /api/v1/me` | `get_me_requires_authentication` | Missing bearer token returns `401` |
+| `POST /api/v1/admin/consents/notices` | --- | No admin user returns `401` |
 | `GET /api/v1/consents/notices?locale=es-MX` | `get_consent_notices_requires_authentication` | Missing bearer token returns `401` |
 | `GET /api/v1/me/consents` | `get_my_consents_requires_authentication` | Missing bearer token returns `401` |
 | `POST /api/v1/consents` | `post_consent_requires_authentication` | A valid-shaped grant without a bearer token returns `401` |
