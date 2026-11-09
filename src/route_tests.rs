@@ -11,7 +11,7 @@
  * File:        route_tests.rs
  * Author:      Alexis Tercero
  * Email:       alexis.tercero@rho.studio
- * Date:        2026-10-21
+ * Date:        2026-11-09
  * ============================================================================
  * Description:
  *      Router-level integration test harness. Boots the full `Router` via
@@ -580,6 +580,29 @@ async fn get_consent_notices_requires_authentication() {
         StatusCode::UNAUTHORIZED,
     )
     .await;
+}
+
+#[tokio::test]
+async fn get_consent_notices_rejects_invalid_locale() {
+    let app = test_app().await;
+    
+    // Intentionally omit the Authorization header entirely.
+    // If validation works correctly, will reject with 422 
+    // BEFORE it ever checks the auth token.
+    let response = request(
+        &app.router,
+        Method::GET,
+        "/api/v1/consents/notices?locale=../../etc/passwd",
+        None,
+        false,
+    )
+    .await;
+
+    assert_eq!(
+        response.status(), 
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "Path traversal attempt should be rejected with 422 before hitting the DB or Auth layer"
+    );
 }
 
 #[tokio::test]

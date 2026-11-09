@@ -11,7 +11,7 @@
  * File:        src/route/consents.rs
  * Author:      Alexis Tercero
  * Email:       alexis.tercero@rho.studio
- * Date:        2026-11-04
+ * Date:        2026-11-09
  * ============================================================================
  * Description:
  *      LFPDPPP consent registry handlers. The platform can record verifiable consent
@@ -328,13 +328,13 @@ pub async fn get_published_notices(
     headers: HeaderMap,
     Query(query): Query<NoticeQuery>,
 ) -> AppResult<Json<Vec<ConsentNoticeResponse>>> {
-    static LOCALE_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[a-z]{2}-[A-Z]{2}$").unwrap());
-    let _user_id = auth::authenticated_user_id(&state, auth::bearer_token(&headers)?).await?;
     let locale = query.locale.unwrap_or_else(|| "es-MX".to_string());
+    static LOCALE_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[a-z]{2}-[A-Z]{2}$").unwrap());
     if !LOCALE_REGEX.is_match(&locale) {
         return Err(AppError::Validation("Invalid locale format".to_string()));
     }
 
+    let _user_id = auth::authenticated_user_id(&state, auth::bearer_token(&headers)?).await?;
     let notices = sqlx::query_as::<_, ConsentNoticeResponse>(
         r#"
         SELECT id, purpose_code, locale, version, content, content_sha256
