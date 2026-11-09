@@ -757,6 +757,47 @@ async fn postgres_backed_publish_notice_succeeds_for_admin() {
     assert_eq!(db_hash, expected_hash);
 }
 
+// ---------------------------------------------------------------------------
+// Notices Retrieval (Defaults & Validation)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn postgres_backed_get_notices_defaults_to_es_mx() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+
+    // 1. Setup: Seed a regular user and get a valid token
+    let (_user_id, access_token, _refresh_token) = seed_and_login(&app, &pool).await;
+    let bearer = format!("Bearer {}", access_token);
+
+    // 2. Act: Request notices WITHOUT the ?locale= query parameter
+    let response = request_with_headers(
+        &app.router,
+        axum::http::Method::GET,
+        "/api/v1/consents/notices",
+        None,
+        false,
+        &[("authorization", &bearer)],
+    )
+    .await;
+
+    // 3. Assert: 200 OK
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // 4. Assert: The response contains the seeded es-MX data
+    let body = json_body(response).await;
+    let notices = body.as_array().expect("response must be a JSON array");
+    
+    assert!(!notices.is_empty(), "Seeder should have populated at least the privacy and KYC notices");
+
+    //every returned notice is indeed in the es-MX locale
+    for notice in notices {
+        assert_eq!(
+            notice["locale"], "es-MX",
+            "Default fallback must return es-MX notices"
+        );
+    }
+}
+
 /*---------------------------------------------------------------------------
 *   me route - unverifed users cant see info
 * ---------------------------------------------------------------------------*/
