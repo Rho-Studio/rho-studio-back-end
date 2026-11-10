@@ -333,7 +333,7 @@ mod tests {
         assert_eq!(ConsentAction::Withdrawn.as_event_type(), "withdrawn");
     }
 
-     #[test]
+    #[test]
     fn lfpdp_art_7_requires_express_consent_for_high_risk_data() {
         // Attempting to grant high-risk data with Tacit consent must fail
         assert_eq!(
@@ -351,6 +351,24 @@ mod tests {
         assert_eq!(
             should_record_event(None, ConsentAction::Granted, true, false, ConsentType::Tacit),
             Ok(true)
+        );
+    }
+
+    #[test]
+    fn grants_to_retired_notice_are_idempotent_if_already_granted() {
+        // Arm 1: If already granted, it's a no-op even if notice is no longer published.
+        assert_eq!(
+            should_record_event(Some(ConsentAction::Granted), ConsentAction::Granted, false, false, ConsentType::Express),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn grants_to_retired_notice_are_rejected_if_not_granted() {
+        // Arm 4: If not currently granted, granting to a retired notice fails.
+        assert_eq!(
+            should_record_event(Some(ConsentAction::Withdrawn), ConsentAction::Granted, false, false, ConsentType::Express),
+            Err(ConsentError::NoticeNotPublished)
         );
     }
 }
