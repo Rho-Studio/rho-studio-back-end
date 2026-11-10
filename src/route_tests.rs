@@ -11,7 +11,7 @@
  * File:        route_tests.rs
  * Author:      Alexis Tercero
  * Email:       alexis.tercero@rho.studio
- * Date:        2026-11-09
+ * Date:        2026-11-10
  * ============================================================================
  * Description:
  *      Router-level integration test harness. Boots the full `Router` via
@@ -594,6 +594,98 @@ async fn post_admin_consents_notices_requires_auth() {
         StatusCode::UNAUTHORIZED,
         "Missing bearer token must return 401 before hitting the database"
     );
+}
+
+#[tokio::test]
+async fn post_admin_consents_notices_rejects_malformed_json() {
+    let app = test_app().await;
+    assert_status(
+        &app.router,
+        Method::POST,
+        "/api/v1/admin/consents/notices",
+        Some("not-json"),
+        false,
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn post_admin_consents_notices_rejects_missing_fields() {
+    let app = test_app().await;
+    assert_status(
+        &app.router,
+        Method::POST,
+        "/api/v1/admin/consents/notices",
+        // Missing "content" field
+        Some(r#"{"purpose_code":"test","locale":"es-MX","version":"1.0"}"#),
+        false,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn post_admin_consents_notices_rejects_empty_strings() {
+    let app = test_app().await;
+    assert_status(
+        &app.router,
+        Method::POST,
+        "/api/v1/admin/consents/notices",
+        Some(r#"{"purpose_code":"","locale":"es-MX","version":"1.0","content":""}"#),
+        false,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn post_admin_consents_notices_rejects_overlong_strings() {
+    let app = test_app().await;
+    // purpose_code is limited to 64 chars
+    let long_str = "a".repeat(65);
+    let body = format!(
+        r#"{{"purpose_code":"{}","locale":"es-MX","version":"1.0","content":"test"}}"#,
+        long_str
+    );
+    assert_status(
+        &app.router,
+        Method::POST,
+        "/api/v1/admin/consents/notices",
+        Some(&body),
+        false,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn post_admin_consents_notices_rejects_invalid_locale_format() {
+    let app = test_app().await;
+    assert_status(
+        &app.router,
+        Method::POST,
+        "/api/v1/admin/consents/notices",
+        // Invalid locale "en" instead of "en-US"
+        Some(r#"{"purpose_code":"test","locale":"en","version":"1.0","content":"test"}"#),
+        false,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn post_admin_consents_notices_rejects_wrong_content_type() {
+    let app = test_app().await;
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/admin/consents/notices")
+        .header("content-type", "text/plain") // Incorrect content type
+        .body(Body::from("{}"))
+        .expect("build API request");
+
+    let response = app.router.clone().oneshot(request).await.expect("execute API request");
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
 
 #[tokio::test]
