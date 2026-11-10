@@ -730,7 +730,6 @@ async fn postgres_backed_publish_notice_forbids_regular_user() {
     assert_eq!(count, 0, "No notice should be inserted when RBAC fails");
 }
 
-
 #[tokio::test]
 async fn postgres_backed_publish_notice_succeeds_for_admin() {
     let TestEnv { app, pool, _postgres } = start_test_env().await;
@@ -875,6 +874,56 @@ async fn postgres_backed_publish_duplicate_published_notice_fails() {
     .unwrap();
 
     assert_eq!(active_version, "1.0", "The active version must still be the first published one");
+}
+
+#[tokio::test]
+async fn postgres_backed_immutable_consent_notices_update_rejects_db_trigger() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+
+    // 1. Fetch the seeded published notice (from Migration 15)
+    let (notice_id, original_content): (Uuid, String) = sqlx::query_as(
+        "SELECT id, content FROM consent_notices WHERE purpose_code = 'privacy' AND status = 'published'"
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("Failed to find seeded privacy notice");
+
+    // 2. Attempt to tamper with the content directly via SQL
+    let tampered_content = "TAMPERED LEGAL TEXT: Rho Studio is not liable for anything.";
+    
+    let update_result = sqlx::query(
+        "UPDATE consent_notices SET content = $1 WHERE id = $2"
+    )
+    .bind(tampered_content)
+    .bind(notice_id)
+    .execute(&pool)
+    .await;
+
+    // 3. Assert that the DB trigger rejected the update
+    assert!(update_result.is_err(), "Database trigger must reject updates to published notices");
+
+    // 4. Verify the exact trigger exception was raised
+    if let Err(sqlx::Error::Database(db_error)) = update_result {
+        let error_message = db_error.message();
+        assert!(
+            error_message.contains("published consent notice identity and content are immutable"),
+            "Unexpected DB error message: {}. Expected trigger to fire.",
+            error_message
+        );
+    } else {
+        panic!("Expected a Database error, but got a different error type");
+    }
+
+    // 5. Double-check that the content in the DB remains unchanged
+    let current_content: String = sqlx::query_scalar(
+        "SELECT content FROM consent_notices WHERE id = $1"
+    )
+    .bind(notice_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(current_content, original_content, "The original content must remain intact");
 }
 
 // ---------------------------------------------------------------------------
