@@ -187,6 +187,7 @@
 use super::{TestApp, request_with_headers, test_app_with_pool};
 use crate::db;
 use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
+use axum::http::Method;
 use axum::{body::to_bytes, http::StatusCode};
 use rand::rngs::OsRng;
 use serde_json::{Value, json};
@@ -247,6 +248,41 @@ async fn json_body(response: axum::response::Response) -> Value {
 
 fn hash_token(token: &str) -> String {
     format!("{:x}", Sha256::digest(token.as_bytes()))
+}
+
+// Helper to create a user, login, and return the Bearer token
+async fn setup_user_and_token(app: &TestApp, pool: &sqlx::PgPool) -> (Uuid, String) {
+    let user_id = Uuid::new_v4();
+    let password = "test-password";
+    let salt = SaltString::generate(&mut OsRng);
+    let password_hash = Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .unwrap()
+        .to_string();
+
+    sqlx::query("INSERT INTO users (id, email, display_name, password_hash, email_verified, is_active) VALUES ($1, $2, $3, $4, true, true)")
+        .bind(user_id)
+        .bind("consent-test@example.test")
+        .bind("Consent Tester")
+        .bind(password_hash)
+        .execute(pool)
+        .await
+        .expect("seed verified test user");
+
+    let login_res = request_with_headers(
+        &app.router,
+        axum::http::Method::POST,
+        "/api/v1/auth/login",
+        Some(&json!({"email": "consent-test@example.test", "password": password}).to_string()),
+        true,
+        &[],
+    ).await;
+    
+    assert_eq!(login_res.status(), StatusCode::OK);
+    let body = json_body(login_res).await;
+    let token = body["access_token"].as_str().unwrap().to_string();
+    
+    (user_id, format!("Bearer {token}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1142,6 +1178,195 @@ async fn postgres_backed_get_notices_logs_critical_telemetry_on_hash_mismatch() 
         "Telemetry missing the critical hash mismatch alert. Logs captured:\n{}",
         logs
     );
+}
+
+// ---------------------------------------------------------------------------
+// Grant consent (audit evidence, tacit vs express, KYC vs standard data)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn postgres_backed_consent_rejects_tacit_for_kyc() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+    let (_, bearer) = setup_user_and_token(&app, &pool).await;
+
+    let body = json!({
+        "purpose_code": "kyc_verification",
+        "locale": "es-MX",
+        "version": "1.0",
+        "action": "granted",
+        "consent_type": "tacit"
+    }).to_string();
+
+    let res = request_with_headers(&app.router, Method::POST, "/api/v1/consents", Some(&body), true, &[("authorization", &bearer)]).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn postgres_backed_consent_accepts_express_for_kyc() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+    let (_, bearer) = setup_user_and_token(&app, &pool).await;
+
+    let body = json!({
+        "purpose_code": "kyc_verification",
+        "locale": "es-MX",
+        "version": "1.0",
+        "action": "granted",
+        "consent_type": "express"
+    }).to_string();
+
+    let res = request_with_headers(&app.router, Method::POST, "/api/v1/consents", Some(&body), true, &[("authorization", &bearer)]).await;
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn postgres_backed_consent_accepts_tacit_for_standard_data() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+    let (_, bearer) = setup_user_and_token(&app, &pool).await;
+
+    let body = json!({
+        "purpose_code": "privacy",
+        "locale": "es-MX",
+        "version": "1.0",
+        "action": "granted",
+        "consent_type": "tacit"
+    }).to_string();
+
+    let res = request_with_headers(&app.router, Method::POST, "/api/v1/consents", Some(&body), true, &[("authorization", &bearer)]).await;
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn postgres_backed_consent_stores_audit_evidence() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+    let (user_id, bearer) = setup_user_and_token(&app, &pool).await;
+    
+    let notice_id: Uuid = sqlx::query_scalar("SELECT id FROM consent_notices WHERE purpose_code = 'privacy' AND locale = 'es-MX'").fetch_one(&pool).await.unwrap();
+
+    let body = json!({
+        "purpose_code": "privacy", "locale": "es-MX", "version": "1.0", "action": "granted", "consent_type": "express"
+    }).to_string();
+
+    let res = request_with_headers(&app.router, Method::POST, "/api/v1/consents", Some(&body), true, &[
+        ("authorization", &bearer),
+        ("user-agent", "Fintech-Mobile-Client/1.0")
+    ]).await;
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+    let (ip, ua, ctype): (String, String, String) = sqlx::query_as(
+        "SELECT host(ip_address), user_agent, consent_type FROM customer_consent_events WHERE user_id = $1 AND notice_id = $2"
+    ).bind(user_id).bind(notice_id).fetch_one(&pool).await.unwrap();
+
+    assert_eq!(ip, "127.0.0.1"); //mock
+    assert_eq!(ua, "Fintech-Mobile-Client/1.0");
+    assert_eq!(ctype, "express");
+}
+
+#[tokio::test]
+async fn postgres_backed_consent_handles_long_user_agent() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+    let (_, bearer) = setup_user_and_token(&app, &pool).await;
+
+    let body = json!({
+        "purpose_code": "privacy", "locale": "es-MX", "version": "1.0", "action": "granted", "consent_type": "express"
+    }).to_string();
+
+    let long_ua = "Mozilla/5.0 ".repeat(200); // ~2000 chars
+    
+    let res = request_with_headers(&app.router, Method::POST, "/api/v1/consents", Some(&body), true, &[
+        ("authorization", &bearer),
+        ("user-agent", &long_ua)
+    ]).await;
+    
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn postgres_backed_grant_consent_succeeds() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+    let (user_id, bearer) = setup_user_and_token(&app, &pool).await;
+    
+    let body = json!({
+        "purpose_code": "privacy", "locale": "es-MX", "version": "1.0", "action": "granted", "consent_type": "express"
+    }).to_string();
+
+    let res = request_with_headers(&app.router, Method::POST, "/api/v1/consents", Some(&body), true, &[("authorization", &bearer)]).await;
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM customer_consent_events WHERE user_id = $1").bind(user_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn postgres_backed_grant_consent_is_idempotent() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+    let (user_id, bearer) = setup_user_and_token(&app, &pool).await;
+    
+    let body = json!({
+        "purpose_code": "privacy", "locale": "es-MX", "version": "1.0", "action": "granted", "consent_type": "express"
+    }).to_string();
+
+    // First
+    let res1 = request_with_headers(&app.router, Method::POST, "/api/v1/consents", Some(&body), true, &[("authorization", &bearer)]).await;
+    assert_eq!(res1.status(), StatusCode::NO_CONTENT);
+
+    // Second
+    let res2 = request_with_headers(&app.router, Method::POST, "/api/v1/consents", Some(&body), true, &[("authorization", &bearer)]).await;
+    assert_eq!(res2.status(), StatusCode::NO_CONTENT);
+
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM customer_consent_events WHERE user_id = $1").bind(user_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(count, 1); // Still 1 event
+}
+
+#[tokio::test]
+async fn postgres_backed_withdraw_consent_requires_prior_grant() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+    let (_, bearer) = setup_user_and_token(&app, &pool).await;
+    
+    let body = json!({
+        "purpose_code": "privacy", "locale": "es-MX", "version": "1.0", "action": "withdrawn", "consent_type": "express"
+    }).to_string();
+
+    let res = request_with_headers(&app.router, Method::POST, "/api/v1/consents", Some(&body), true, &[("authorization", &bearer)]).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn postgres_backed_withdraw_consent_is_idempotent() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+    let (user_id, bearer) = setup_user_and_token(&app, &pool).await;
+    
+    let grant_body = json!({"purpose_code": "privacy", "locale": "es-MX", "version": "1.0", "action": "granted", "consent_type": "express"}).to_string();
+    let withdraw_body = json!({"purpose_code": "privacy", "locale": "es-MX", "version": "1.0", "action": "withdrawn", "consent_type": "express"}).to_string();
+
+    // Grant
+    request_with_headers(&app.router, Method::POST, "/api/v1/consents", Some(&grant_body), true, &[("authorization", &bearer)]).await;
+    
+    // Withdraw 1
+    let res1 = request_with_headers(&app.router, Method::POST, "/api/v1/consents", Some(&withdraw_body), true, &[("authorization", &bearer)]).await;
+    assert_eq!(res1.status(), StatusCode::NO_CONTENT);
+
+    // Withdraw 2
+    let res2 = request_with_headers(&app.router, Method::POST, "/api/v1/consents", Some(&withdraw_body), true, &[("authorization", &bearer)]).await;
+    assert_eq!(res2.status(), StatusCode::NO_CONTENT);
+
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM customer_consent_events WHERE user_id = $1").bind(user_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(count, 2); // Grant + Withdraw = 2 events
+}
+
+#[tokio::test]
+async fn postgres_backed_consent_rejects_retired_notice() {
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+    let (_, bearer) = setup_user_and_token(&app, &pool).await;
+
+    sqlx::query("UPDATE consent_notices SET status = 'retired' WHERE purpose_code = 'privacy' AND locale = 'es-MX'")
+        .execute(&pool).await.unwrap();
+    
+    let body = json!({
+        "purpose_code": "privacy", "locale": "es-MX", "version": "1.0", "action": "granted", "consent_type": "express"
+    }).to_string();
+
+    let res = request_with_headers(&app.router, Method::POST, "/api/v1/consents", Some(&body), true, &[("authorization", &bearer)]).await;
+    assert_eq!(res.status(), StatusCode::CONFLICT);
 }
 
 /*---------------------------------------------------------------------------
