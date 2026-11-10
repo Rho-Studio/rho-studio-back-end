@@ -193,12 +193,48 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::io::Write;
 use testcontainers::{
     ContainerAsync, GenericImage, ImageExt,
     core::{IntoContainerPort, WaitFor},
     runners::AsyncRunner,
 };
 use uuid::Uuid;
+
+#[derive(Clone, Default)]
+struct CaptureWriter {
+    buffer: Arc<Mutex<Vec<u8>>>,
+}
+
+impl CaptureWriter {
+    fn new() -> Self {
+        Self {
+            buffer: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+    fn contents(&self) -> String {
+        String::from_utf8_lossy(&self.buffer.lock().unwrap()).to_string()
+    }
+}
+
+impl Write for CaptureWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut lock = self.buffer.lock().unwrap();
+        lock.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
+    type Writer = CaptureWriter;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
 
 const POSTGRES_PORT: u16 = 5432;
 
@@ -998,6 +1034,62 @@ async fn postgres_backed_get_notices_rejects_tampered_content() {
     let body = json_body(response).await;
     assert_eq!(body["error"]["code"], "INTERNAL_ERROR");
     assert_eq!(body["error"]["message"], "Internal server error");
+}
+
+#[tokio::test]
+async fn postgres_backed_get_notices_logs_critical_telemetry_on_hash_mismatch() {
+    // 1. Setup tracing subscriber to capture ERROR logs for this thread
+    let writer = CaptureWriter::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(writer.clone())
+        .with_max_level(tracing::Level::ERROR) // Only capture ERROR level
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let TestEnv { app, pool, _postgres } = start_test_env().await;
+
+    // 2. Setup user and login
+    let (_user_id, access_token, _) = seed_and_login(&app, &pool).await;
+    let bearer = format!("Bearer {}", access_token);
+
+    // 3. Tamper with the database to cause a hash mismatch
+    let notice_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM consent_notices WHERE purpose_code = 'privacy' AND locale = 'es-MX' AND version = '1.0'"
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("find seeded privacy notice");
+
+    // We must disable the trigger to force the tampering, then re-enable it
+    sqlx::query("ALTER TABLE consent_notices DISABLE TRIGGER consent_notices_protect_content")
+        .execute(&pool).await.unwrap();
+    sqlx::query("UPDATE consent_notices SET content = 'TAMPERED CONTENT' WHERE id = $1")
+        .bind(notice_id)
+        .execute(&pool).await.unwrap();
+    sqlx::query("ALTER TABLE consent_notices ENABLE TRIGGER consent_notices_protect_content")
+        .execute(&pool).await.unwrap();
+
+    // 4. Act: Call the endpoint (it should detect the mismatch and return 500)
+    let response = request_with_headers(
+        &app.router,
+        axum::http::Method::GET,
+        "/api/v1/consents/notices?locale=es-MX",
+        None,
+        false,
+        &[("authorization", &bearer)],
+    )
+    .await;
+
+    // 5. Assert HTTP 500
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    // 6. Assert Telemetry Alert was emitted
+    let logs = writer.contents();
+    assert!(
+        logs.contains("CRITICAL: published consent notice content hash mismatch"),
+        "Telemetry missing the critical hash mismatch alert. Logs captured:\n{}",
+        logs
+    );
 }
 
 /*---------------------------------------------------------------------------
