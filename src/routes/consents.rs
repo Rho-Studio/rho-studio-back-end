@@ -406,7 +406,6 @@ pub async fn record_consent(
     headers: HeaderMap,
     Json(request): Json<ConsentRequest>,
 ) -> AppResult<StatusCode> {
-    let user_id = auth::authenticated_user_id(&state, auth::bearer_token(&headers)?).await?;
     if request.purpose_code.is_empty()
         || request.purpose_code.len() > 64
         || request.locale.is_empty()
@@ -418,6 +417,7 @@ pub async fn record_consent(
             "Invalid consent reference".to_string(),
         ));
     }
+    let user_id = auth::authenticated_user_id(&state, auth::bearer_token(&headers)?).await?;
 
     //Extract Audit Evidence
     let ip_address = auth::client_ip(

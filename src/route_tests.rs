@@ -754,3 +754,142 @@ async fn post_consent_requires_authentication() {
     )
     .await;
 }
+#[tokio::test]
+async fn post_consent_rejects_malformed_json() {
+    let app = test_app().await;
+    assert_status(
+        &app.router,
+        Method::POST,
+        "/api/v1/consents",
+        Some("not-json"),
+        true, // include_connect_info
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn post_consent_rejects_invalid_action_enum() {
+    let app = test_app().await;
+    let body = r#"{
+        "purpose_code": "privacy",
+        "locale": "es-MX",
+        "version": "1.0",
+        "action": "maybe",
+        "consent_type": "express"
+    }"#;
+    assert_status(
+        &app.router,
+        Method::POST,
+        "/api/v1/consents",
+        Some(body),
+        true,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn post_consent_rejects_invalid_consent_type_enum() {
+    let app = test_app().await;
+    let body = r#"{
+        "purpose_code": "privacy",
+        "locale": "es-MX",
+        "version": "1.0",
+        "action": "granted",
+        "consent_type": "magic"
+    }"#;
+    assert_status(
+        &app.router,
+        Method::POST,
+        "/api/v1/consents",
+        Some(body),
+        true,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn post_consent_rejects_empty_strings() {
+    let app = test_app().await;
+    let body = r#"{
+        "purpose_code": "",
+        "locale": "es-MX",
+        "version": "1.0",
+        "action": "granted",
+        "consent_type": "express"
+    }"#;
+    assert_status(
+        &app.router,
+        Method::POST,
+        "/api/v1/consents",
+        Some(body),
+        true,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn post_consent_rejects_overlong_strings() {
+    let app = test_app().await;
+    // Purpose code > 64 chars
+    let long_purpose = "a".repeat(65);
+    let body = format!(
+        r#"{{
+            "purpose_code": "{}",
+            "locale": "es-MX",
+            "version": "1.0",
+            "action": "granted",
+            "consent_type": "express"
+        }}"#,
+        long_purpose
+    );
+    assert_status(
+        &app.router,
+        Method::POST,
+        "/api/v1/consents",
+        Some(&body),
+        true,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn post_consent_rejects_missing_fields() {
+    let app = test_app().await;
+    let body = r#"{
+        "purpose_code": "privacy",
+        "locale": "es-MX"
+    }"#; // Missing version, action, consent_type
+    assert_status(
+        &app.router,
+        Method::POST,
+        "/api/v1/consents",
+        Some(body),
+        true,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn post_consent_rejects_wrong_content_type() {
+    let app = test_app().await;
+    let body = r#"{"purpose_code": "privacy"}"#;
+    
+    // Use request_with_headers to override the default application/json
+    let response = request_with_headers(
+        &app.router,
+        Method::POST,
+        "/api/v1/consents",
+        Some(body),
+        true,
+        &[("content-type", "text/plain")], // Intentionally wrong
+    )
+    .await;
+    
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+}
