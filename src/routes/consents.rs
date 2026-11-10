@@ -262,13 +262,7 @@ pub async fn publish_notice(
     headers: HeaderMap,
     Json(request): Json<PublishNoticeRequest>,
 ) -> AppResult<(StatusCode, Json<PublishedNoticeResponse>)> {
-    // 1. Authenticate: Get the user_id from the JWT (returns 401 if invalid)
-    let user_id = crate::routes::auth::authenticated_user_id(&state, crate::routes::auth::bearer_token(&headers)?).await?;
-
-    // 2. Authorize: Verify the user is an admin in the database (returns 403 if not)
-    require_admin(&state, user_id).await?;
-
-    // 3. Validate input shape
+    // 1. Validate input shape
     if request.purpose_code.is_empty() || request.purpose_code.len() > 64
         || request.locale.is_empty() || request.locale.len() > 16
         || request.version.is_empty() || request.version.len() > 64
@@ -276,6 +270,13 @@ pub async fn publish_notice(
     {
         return Err(AppError::Validation("Invalid notice payload".to_string()));
     }
+
+    // 2. Authenticate: Get the user_id from the JWT (returns 401 if invalid)
+    let user_id = crate::routes::auth::authenticated_user_id(&state, crate::routes::auth::bearer_token(&headers)?).await?;
+
+    // 3. Authorize: Verify the user is an admin in the database (returns 403 if not)
+    require_admin(&state, user_id).await?;
+
 
     // 4. Hash the content (The backend calculates this, never trusting the client)
     let content_hash = format!("{:x}", Sha256::digest(request.content.as_bytes()));

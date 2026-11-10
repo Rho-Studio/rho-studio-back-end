@@ -878,7 +878,7 @@ async fn postgres_backed_publish_duplicate_published_notice_fails() {
 
 #[tokio::test]
 async fn postgres_backed_immutable_consent_notices_update_rejects_db_trigger() {
-    let TestEnv { app, pool, _postgres } = start_test_env().await;
+    let TestEnv { app: _, pool, _postgres } = start_test_env().await;
 
     // 1. Fetch the seeded published notice (from Migration 15)
     let (notice_id, original_content): (Uuid, String) = sqlx::query_as(
