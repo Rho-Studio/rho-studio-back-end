@@ -240,6 +240,15 @@ fn map_consent_error(error: ConsentError) -> AppError {
     }
 }
 
+/// Validates a BCP 47 locale string (e.g., "es-MX", "en-US").
+/// Must be exactly 2 lowercase letters, a hyphen, and 2 uppercase letters.
+fn is_valid_locale(locale: &str) -> bool {
+    let parts: Vec<&str> = locale.split('-').collect();
+    parts.len() == 2 
+        && parts[0].len() == 2 && parts[0].chars().all(|c| c.is_ascii_lowercase())
+        && parts[1].len() == 2 && parts[1].chars().all(|c| c.is_ascii_uppercase())
+}
+
 async fn require_admin(state: &AppState, user_id: Uuid) -> AppResult<()> {
     // Query the database for the user's admin status.
     // check `is_active = true` to prevent banned admins from publishing.
@@ -264,7 +273,7 @@ pub async fn publish_notice(
 ) -> AppResult<(StatusCode, Json<PublishedNoticeResponse>)> {
     // 1. Validate input shape
     if request.purpose_code.is_empty() || request.purpose_code.len() > 64
-        || request.locale.is_empty() || request.locale.len() > 16
+        || !is_valid_locale(&request.locale)
         || request.version.is_empty() || request.version.len() > 64
         || request.content.is_empty() 
     {
