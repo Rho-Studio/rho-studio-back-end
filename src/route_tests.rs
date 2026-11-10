@@ -880,16 +880,25 @@ async fn post_consent_rejects_wrong_content_type() {
     let app = test_app().await;
     let body = r#"{"purpose_code": "privacy"}"#;
     
-    // Use request_with_headers to override the default application/json
-    let response = request_with_headers(
-        &app.router,
-        Method::POST,
-        "/api/v1/consents",
-        Some(body),
-        true,
-        &[("content-type", "text/plain")], // Intentionally wrong
-    )
-    .await;
-    
+    let mut request = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/consents")
+        .header("content-type", "text/plain")
+        .body(Body::from(body))
+        .expect("build API request");
+
+    request.extensions_mut().insert(ConnectInfo(
+        "127.0.0.1:12345"
+            .parse::<SocketAddr>()
+            .expect("valid peer address"),
+    ));
+
+    let response = app
+        .router
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("execute API request");
+
     assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
