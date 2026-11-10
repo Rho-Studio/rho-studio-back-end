@@ -891,10 +891,13 @@ async fn postgres_backed_immutable_consent_notices_update_rejects_db_trigger() {
     // 2. Attempt to tamper with the content directly via SQL
     let tampered_content = "TAMPERED LEGAL TEXT: Rho Studio is not liable for anything.";
     
+    let tampered_hash = format!("{:x}", Sha256::digest(tampered_content.as_bytes()));
+    
     let update_result = sqlx::query(
-        "UPDATE consent_notices SET content = $1 WHERE id = $2"
+        "UPDATE consent_notices SET content = $1, content_sha256 = $2 WHERE id = $3"
     )
     .bind(tampered_content)
+    .bind(&tampered_hash)
     .bind(notice_id)
     .execute(&pool)
     .await;
