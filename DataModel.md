@@ -6,7 +6,7 @@
 covered by container-backed integration tests. Account, loan, transfer, and
 repayment API workflows are not implemented.
 
-> **Consent model**: Consent is stored in two places with two different responsibilities. ``consent_notices`` holds versioned notice content. ``customer_consent_events`` is the append-only audit log of every grant and withdrawal. ``customer_consents`` is a state projection derived from the event log for fast reads and first-class customer-scoped queries. This dual-table approach is the fintech best practice: the event log satisfies LFPDPPP auditability and the projection satisfies the customer-scoped ERD without compromising either. See "Consent registry design" below.
+> **Consent model**: ``consent_notices`` holds versioned notice content. ``customer_consent_events`` is the append-only audit log of every grant and withdrawal, including the evidence added by migration 16. The current state can be derived from this event log; the migrations do not create a separate ``customer_consents`` projection.
 
 ## At a Glance
 
@@ -30,7 +30,7 @@ repayment API workflows are not implemented.
 ### Full Schema
 
 The complete model includes identity, consent, KYC, privacy, account, loan,
-and payment tables. Entities use the Rho `dataNode` style: light-gray fill,
+payment, regulatory, and operational tables. Entities use the Rho `dataNode` style: light-gray fill,
 black text, and red borders. The same diagram is available as a standalone
 [Mermaid source file](./datamodel.mmd).
 
@@ -38,7 +38,7 @@ black text, and red borders. The same diagram is available as a standalone
 %%{init: {"theme":"base","themeVariables":{"background":"#FFFFFF","mainBkg":"#FFFFFF","primaryColor":"#333333","primaryTextColor":"#FFFFFF","primaryBorderColor":"#D32F2F","lineColor":"#D32F2F","secondaryColor":"#4A4A4A","secondaryTextColor":"#FFFFFF","secondaryBorderColor":"#D32F2F","tertiaryColor":"#4A4A4A","tertiaryTextColor":"#333333","tertiaryBorderColor":"#D32F2F","textColor":"#333333"}}}%%
 erDiagram
     %% ══════════════════════════════════════════════════════════════════
-    %% AUTH / IDENTITY / CONSENT  (migrations 10, 11, 12, 13)
+    %% AUTH / IDENTITY / CONSENT  (migrations 10-16)
     %% ══════════════════════════════════════════════════════════════════
     users ||--o{ refresh_tokens : owns
     users ||--o{ customer_verification_cases : opens
@@ -62,7 +62,7 @@ erDiagram
     loans ||--o{ amortization_schedules : scheduled_in
 
     %% ══════════════════════════════════════════════════════════════════
-    %% REGULATORY (with FKs only)  (migration 4)
+    %% REGULATORY (migration 4)
     %% ══════════════════════════════════════════════════════════════════
     customers ||--o| aml_risk_profiles : profiled_by
     customers ||--o{ uif_notices : subject_of
@@ -75,7 +75,6 @@ erDiagram
     accounts ||--o{ dimo_registrations : linked_to
     accounts ||--o{ transfer_limits : tracked_by
 
-    %% ══════════════════════════════════════════════════════════════════
     %% ARCO → ANONYMIZATION  (migration 5)
     %% ══════════════════════════════════════════════════════════════════
     arco_requests ||--o{ data_anonymization_log : fulfilled_by
@@ -84,9 +83,9 @@ erDiagram
     %% EVENT STORE  (migration 3) — non-identifying, no FKs
     %% ══════════════════════════════════════════════════════════════════
     aggregate_versions ||..o{ domain_events : gates_append
-    domain_events ||..o| aggregate_snapshots : snapshotted_at
-    domain_events ||..o{ outbox_events : mirrored_to
-    domain_events |o..o{ uif_notices : soft_reference
+    aggregate_versions ||..o| aggregate_snapshots : versions_state_no_FK
+    domain_events ||..o{ outbox_events : published_by_aggregate_no_FK
+    domain_events ||..o{ uif_notices : event_reference_no_FK
 
     %% ══════════════════════════════════════════════════════════════════
     %% READ MODELS / CQRS  (migration 7) — projections, no FKs
@@ -102,236 +101,423 @@ erDiagram
     %% ══════════════════════════════════════════════════════════════════
     users {
         uuid id PK
-        string email UK "lower(email) unique index"
-        string display_name
-        string password_hash "Argon2id"
+        varchar(320) email UK
+        varchar(120) display_name
+        text password_hash
         boolean email_verified
         boolean is_active
+        timestamptz created_at
+        timestamptz updated_at
+        boolean is_admin
     }
     refresh_tokens {
-        uuid id PK "= JWT jti claim"
+        uuid id PK
         uuid user_id FK
-        string token_hash UK "SHA-256 hex"
+        varchar(64) token_hash UK
         uuid token_family_id
-        timestamp expires_at
-        timestamp revoked_at
+        timestamptz expires_at
+        timestamptz revoked_at
+        varchar(512) user_agent
+        timestamptz created_at
     }
     customer_verification_cases {
         uuid id PK
         uuid user_id FK
-        string status "pending|manual_review|verified|rejected|cancelled"
+        text status
+        timestamptz created_at
+        timestamptz updated_at
     }
     consent_notices {
         uuid id PK
-        string purpose_code UK
-        string locale UK
-        string version UK
-        string content_sha256
-        string status "draft|published|retired"
+        varchar(64) purpose_code
+        varchar(16) locale
+        varchar(64) version
+        text content
+        varchar(64) content_sha256
+        varchar(16) status
+        timestamptz published_at
+        timestamptz retired_at
+        timestamptz created_at
+        timestamptz updated_at
     }
     customer_consent_events {
         uuid id PK
         uuid user_id FK
         uuid notice_id FK
-        string event_type "granted|withdrawn"
-        timestamp recorded_at
+        varchar(16) event_type
+        timestamptz recorded_at
+        inet ip_address
+        text user_agent
+        varchar(16) consent_type
     }
     customers {
         uuid id PK
-        uuid user_id FK "nullable, unique when set"
-        string rfc UK
-        string curp UK
-        string email UK
-        string kyc_level "nivel_1..4"
+        uuid user_id FK, UK
+        varchar(13) rfc UK
+        varchar(18) curp UK
+        varchar(100) first_name
+        varchar(100) last_name
+        varchar(100) second_last_name
+        varchar(255) email UK
+        varchar(20) phone
+        date date_of_birth
+        kyc_level kyc_level
+        timestamptz kyc_verified_at
+        text address_line
+        varchar(100) address_city
+        varchar(100) address_state
+        varchar(10) address_postal_code
+        varchar(3) address_country
+        varchar(20) privacy_notice_version
+        timestamptz privacy_notice_accepted_at
+        boolean pep_status
+        timestamptz sanctions_checked_at
         bigint version
+        timestamptz created_at
+        timestamptz updated_at
     }
     accounts {
         uuid id PK
         uuid customer_id FK
-        string clabe UK
-        decimal balance "18,2"
-        decimal held_amount "18,2"
-        string status
+        varchar(18) account_number UK
+        varchar(18) clabe UK
+        varchar(30) account_type
+        char(3) currency
+        decimal(18,2) balance
+        decimal(18,2) held_amount
+        account_status status
+        timestamptz opened_at
+        timestamptz closed_at
         bigint version
+        timestamptz created_at
+        timestamptz updated_at
     }
     account_holds {
         uuid id PK
         uuid account_id FK
-        decimal amount "18,2"
-        uuid reference_id "soft pointer"
-        timestamp released_at
-    }
-    loan_applications {
-        uuid id PK
-        uuid customer_id FK
-        decimal requested_amount "18,2"
-        int requested_term
-        string status
-        bigint version
+        decimal(18,2) amount
+        varchar(100) reason
+        uuid reference_id
+        timestamptz placed_at
+        timestamptz released_at
+        timestamptz expires_at
     }
     loans {
         uuid id PK
+        varchar(30) loan_number UK
         uuid customer_id FK
-        uuid disbursement_account_id FK "nullable"
-        decimal principal_amount "18,2"
-        decimal outstanding_principal "18,2"
+        uuid disbursement_account_id FK
+        decimal(18,2) principal_amount
+        decimal(18,2) outstanding_principal
         int interest_rate_bps
-        string status
+        int term_months
+        char(3) currency
+        loan_status status
+        decimal(12,6) udi_value_at_origination
+        decimal(8,4) cat_average
+        timestamptz approved_at
+        timestamptz disbursed_at
+        date maturity_date
+        timestamptz paid_off_at
         bigint version
+        timestamptz created_at
+        timestamptz updated_at
     }
     amortization_schedules {
         uuid id PK
         uuid loan_id FK
-        int installment_number UK "unique(loan,installment)"
+        int installment_number
         date due_date
-        decimal total_payment "18,2"
-        timestamp paid_at
+        decimal(18,2) principal_portion
+        decimal(18,2) interest_portion
+        decimal(18,2) total_payment
+        decimal(18,2) remaining_balance
+        timestamptz paid_at
+        decimal(18,2) paid_amount
+        bigint version
+        timestamptz created_at
+    }
+    loan_applications {
+        uuid id PK
+        uuid customer_id FK
+        decimal(18,2) requested_amount
+        int requested_term
+        text purpose
+        application_status status
+        int credit_score
+        text decision_reason
+        timestamptz decided_at
+        bigint version
+        timestamptz created_at
+        timestamptz updated_at
     }
     domain_events {
         uuid id PK
-        timestamp occurred_at PK "PARTITION KEY, monthly"
+        timestamptz occurred_at PK
         uuid aggregate_id
-        string aggregate_type
-        string event_type
+        varchar(50) aggregate_type
+        varchar(100) event_type
+        jsonb payload
         bigint version
         uuid correlation_id
+        uuid causation_id
+        uuid device_id
+        varchar(20) app_version
+        varchar(10) platform
+        inet ip_address
+        jsonb geolocation
+        varchar(13) rfc
+        varchar(18) curp
+        decimal(18,2) amount_mxn
+        decimal(18,6) amount_udis
+        decimal(12,6) udi_value
+        varchar(4) vulnerable_activity
+        uuid regulatory_report_id
     }
     aggregate_versions {
         uuid aggregate_id PK
-        string aggregate_type PK
+        varchar(50) aggregate_type PK
         bigint current_version
-        timestamp updated_at
+        timestamptz updated_at
     }
     aggregate_snapshots {
         uuid aggregate_id PK
-        string aggregate_type PK
+        varchar(50) aggregate_type PK
         bigint version
-        string state "JSONB"
+        jsonb state
+        timestamptz created_at
     }
     outbox_events {
         uuid id PK
         uuid aggregate_id
-        string event_type
-        timestamp published_at
+        varchar(100) event_type
+        jsonb payload
+        timestamptz created_at
+        timestamptz published_at
         int retry_count
+        text last_error
     }
     aml_risk_profiles {
-        uuid customer_id PK "FK to customers"
-        string risk_level "low|medium|high"
+        uuid customer_id PK, FK
+        aml_risk_level risk_level
+        jsonb risk_factors
         boolean pep_status
         boolean sanctions_match
-        timestamp next_assessment_at "+6 months"
+        varchar(10) country_risk
+        timestamptz last_assessed_at
+        timestamptz next_assessment_at
+        varchar(100) assessed_by
+        text notes
+        bigint version
+        timestamptz created_at
+        timestamptz updated_at
     }
     uif_notices {
         uuid id PK
         uuid customer_id FK
-        uuid event_id "soft FK, no constraint"
-        string notice_type "relevante|inusual|interna"
-        decimal amount_mxn "18,2"
-        string submission_status
+        uuid event_id
+        varchar(20) notice_type
+        varchar(4) vulnerable_activity
+        decimal(18,2) amount_mxn
+        decimal(18,4) amount_uma
+        date operation_date
+        date detection_date
+        text xml_payload
+        timestamptz submitted_at
+        varchar(100) submission_ack
+        varchar(20) submission_status
+        int retry_count
+        text last_error
+        timestamptz created_at
     }
     kyc_verifications {
         uuid id PK
         uuid customer_id FK
-        string level "nivel_1..4"
-        string status "pending|approved|rejected"
+        kyc_level level
+        varchar(20) status
+        boolean rfc_validated
+        varchar(30) official_id_type
+        varchar(50) official_id_number
+        boolean curp_validated
+        text proof_of_address_url
         boolean biometric_verified
+        boolean liveness_check_passed
+        int video_call_duration_seconds
+        varchar(100) renaapo_reference
+        varchar(100) ine_validation_ref
+        varchar(100) verified_by
+        timestamptz verified_at
+        text rejection_reason
+        timestamptz created_at
     }
     arco_requests {
         uuid id PK
         uuid customer_id FK
-        string request_type "access|rectification|cancellation|opposition"
-        string status "received|in_progress|completed|rejected|expired"
-        timestamp due_at "+20 days SLA"
+        arco_request_type request_type
+        arco_status status
+        varchar(100) field_to_rectify
+        text current_value
+        text requested_value
+        varchar(100) purpose_to_oppose
+        timestamptz received_at
+        timestamptz due_at
+        timestamptz completed_at
+        text response_notes
+        text response_document_url
+        text rejection_reason
+        varchar(100) handled_by
+        timestamptz created_at
+        timestamptz updated_at
     }
     data_anonymization_log {
         uuid id PK
-        uuid customer_id "no FK by design"
+        uuid customer_id
         uuid arco_request_id FK
-        timestamp anonymized_at
+        jsonb fields_anonymized
+        timestamptz anonymized_at
+        varchar(100) anonymized_by
     }
     registered_devices {
         uuid id PK
-        uuid device_id UK "unique(device,customer)"
+        uuid device_id
         uuid customer_id FK
-        string platform "ios|android"
-        string status "active|suspended|revoked"
+        varchar(10) platform
+        varchar(20) os_version
+        varchar(50) device_model
+        text public_key_pem
+        varchar(20) attestation_status
+        text attestation_token
+        decimal(5,2) risk_score
+        device_status status
+        timestamptz last_seen_at
+        timestamptz registered_at
+        timestamptz revoked_at
     }
     device_tokens {
         uuid id PK
         uuid customer_id FK
-        uuid device_id UK "unique(device,token)"
-        string token UK
-        string platform
+        uuid device_id
+        varchar(10) platform
+        text token
+        varchar(20) app_version
+        timestamptz created_at
+        timestamptz last_seen_at
+        timestamptz invalidated_at
     }
     spei_transfers {
         uuid id PK
         uuid origin_account_id FK
-        string destination_clabe "18 digits"
-        decimal amount_mxn "18,2"
-        string rail "spei|codi|dimo"
-        string status
+        varchar(18) destination_clabe
+        varchar(200) destination_name
+        decimal(18,2) amount_mxn
+        char(3) currency
+        varchar(40) concept
+        varchar(40) reference
+        payment_rail rail
+        transfer_status status
+        varchar(50) spei_tracking_key
+        varchar(50) banxico_reference
+        decimal(12,6) udi_value_at_time
+        decimal(18,6) amount_udis
         uuid idempotency_key UK
+        timestamptz initiated_at
+        timestamptz completed_at
+        timestamptz failed_at
+        text failure_reason
+        uuid correlation_id
+        uuid device_id
     }
     codi_messages {
         uuid id PK
-        uuid spei_transfer_id FK "nullable"
-        decimal amount_mxn "18,2"
-        decimal amount_udis "18,6 <= 6000"
-        string status
+        uuid spei_transfer_id FK
+        varchar(20) message_type
+        text qr_payload
+        decimal(18,2) amount_mxn
+        decimal(18,6) amount_udis
+        decimal(12,6) udi_value
+        boolean from_push_notification
+        boolean beneficiary_data_editable
+        varchar(20) status
+        timestamptz expires_at
+        timestamptz created_at
     }
     dimo_registrations {
         uuid id PK
         uuid customer_id FK
         uuid account_id FK
-        string phone_number UK "unique(phone,institution)"
-        string institution_code UK
-        string clabe
+        varchar(10) phone_number
+        varchar(18) clabe
+        varchar(5) institution_code
+        boolean is_active
+        timestamptz registered_at
+        timestamptz deactivated_at
     }
     transfer_limits {
         uuid id PK
         uuid account_id FK
-        string period_type UK "daily|monthly"
-        date period_start UK
-        decimal total_transferred "18,2"
+        varchar(10) period_type
+        date period_start
+        decimal(18,2) total_transferred
+        int total_transfers
+        timestamptz last_transfer_at
     }
     account_balances {
         uuid account_id PK
         uuid customer_id
-        decimal balance_mxn "18,2"
-        decimal available_mxn "18,2"
-        decimal held_mxn "18,2"
+        decimal(18,2) balance_mxn
+        decimal(18,2) available_mxn
+        decimal(18,2) held_mxn
         bigint last_event_version
+        uuid last_event_id
+        timestamptz updated_at
     }
     loan_summary {
         uuid loan_id PK
         uuid customer_id
-        string loan_number
-        decimal outstanding_mxn "18,2"
-        string status
+        varchar(30) loan_number
+        decimal(18,2) principal_mxn
+        decimal(18,2) outstanding_mxn
+        int interest_rate_bps
+        int term_months
+        loan_status status
+        date next_payment_date
+        decimal(18,2) next_payment_amount
+        int payments_made
         int days_past_due
+        bigint last_event_version
+        timestamptz updated_at
     }
     transaction_history {
         uuid id PK
         uuid account_id
         uuid customer_id
         uuid event_id
-        decimal amount_mxn "18,2"
-        timestamp occurred_at
+        varchar(100) event_type
+        decimal(18,2) amount_mxn
+        decimal(18,2) running_balance_mxn
+        varchar(255) description
+        varchar(200) counterparty
+        varchar(100) reference
+        timestamptz occurred_at
+        timestamptz created_at
     }
     sync_changes {
-        bigint id PK
-        string entity_type
+        bigserial id PK
+        varchar(50) entity_type
         uuid entity_id
         uuid customer_id
-        string change_type "upsert|delete"
-        timestamp occurred_at
+        varchar(10) change_type
+        timestamptz occurred_at
+        uuid event_id
     }
     delinquency_report {
         uuid loan_id PK
         uuid customer_id
         int days_past_due
-        decimal overdue_amount_mxn "18,2"
+        decimal(18,2) overdue_amount_mxn
+        date last_payment_date
+        bigint last_event_version
+        timestamptz updated_at
     }
 
     %% ══════════════════════════════════════════════════════════════════
@@ -341,7 +527,7 @@ erDiagram
     classDef eventNode fill:#E8E8E8,stroke:#D32F2F,color:#000000
     classDef readNode fill:#BEBEBE,stroke:#D32F2F,color:#000000
 
-    class users,refresh_tokens,customer_verification_cases,consent_notices,customer_consent_events,customers,accounts,account_holds,loan_applications,loans,amortization_schedules,aml_risk_profiles,uif_notices,kyc_verifications,arco_requests,data_anonymization_log,registered_devices,device_tokens,spei_transfers,codi_messages,dimo_registrations,transfer_limits dataNode
+    class users,refresh_tokens,customer_verification_cases,consent_notices,customer_consent_events,customers,accounts,account_holds,loan_applications,loans,amortization_schedules,aml_risk_profiles,uif_notices,kyc_verifications,arco_requests,data_anonymization_log,registered_devices,device_tokens,spei_transfers,codi_messages,dimo_registrations,transfer_limits,udi_values,regulatory_capital,cnbv_report_submissions,idempotency_keys,request_log,projection_checkpoints,regulatory_calendar dataNode
     class domain_events,aggregate_versions,aggregate_snapshots,outbox_events eventNode
     class account_balances,loan_summary,transaction_history,sync_changes,delinquency_report readNode
 ```
@@ -349,7 +535,8 @@ erDiagram
 The smaller diagrams below are intentionally focused views: they isolate
 account/loan and payment relationships so developers can inspect those parts
 without the full diagram's visual density. Boxes are entities, attributes are
-columns, and crow's-foot markers show foreign-key cardinality.
+columns, and crow's-foot markers show foreign-key cardinality. Solid lines are database foreign keys; dotted lines
+show logical or projection relationships without an enforced foreign key.
 
 ### Identity and Sessions
 
@@ -364,43 +551,80 @@ erDiagram
 
   users {
     uuid id PK
-    string email UK
-    string display_name
-    string password_hash
+    varchar(320) email UK
+    varchar(120) display_name
+    text password_hash
     boolean is_active
     boolean email_verified
+    timestamptz created_at
+    timestamptz updated_at
+    boolean is_admin
   }
   refresh_tokens {
     uuid id PK
     uuid user_id FK
-    string token_hash UK
+    varchar(64) token_hash UK
     uuid token_family_id
-    timestamp expires_at
-    timestamp revoked_at
+    timestamptz expires_at
+    timestamptz revoked_at
+    varchar(512) user_agent
+    timestamptz created_at
   }
   customer_verification_cases {
     uuid id PK
     uuid user_id FK
-    string status
+    text status
+    timestamptz created_at
+    timestamptz updated_at
   }
   consent_notices {
     uuid id PK
-    string purpose_code
-    string locale
-    string version
-    string status
+    varchar(64) purpose_code
+    varchar(16) locale
+    varchar(64) version
+    text content
+    varchar(64) content_sha256
+    varchar(16) status
+    timestamptz published_at
+    timestamptz retired_at
+    timestamptz created_at
+    timestamptz updated_at
   }
   customer_consent_events {
     uuid id PK
     uuid user_id FK
     uuid notice_id FK
-    string event_type
-    timestamp recorded_at
+    varchar(16) event_type
+    timestamptz recorded_at
+    inet ip_address
+    text user_agent
+    varchar(16) consent_type
   }
   customers {
     uuid id PK
     uuid user_id FK, UK
-    string rfc UK
+    varchar(13) rfc UK
+    varchar(18) curp UK
+    varchar(100) first_name
+    varchar(100) last_name
+    varchar(100) second_last_name
+    varchar(255) email UK
+    varchar(20) phone
+    date date_of_birth
+    kyc_level kyc_level
+    timestamptz kyc_verified_at
+    text address_line
+    varchar(100) address_city
+    varchar(100) address_state
+    varchar(10) address_postal_code
+    varchar(3) address_country
+    varchar(20) privacy_notice_version
+    timestamptz privacy_notice_accepted_at
+    boolean pep_status
+    timestamptz sanctions_checked_at
+    bigint version
+    timestamptz created_at
+    timestamptz updated_at
   }
 
   classDef dataNode fill:#D3D3D3,stroke:#D32F2F,color:#000000
@@ -421,58 +645,121 @@ erDiagram
   customers ||--o{ accounts : owns
   customers ||--o{ loan_applications : submits
   customers ||--o{ loans : borrows
+  accounts o|--o{ loans : disburses_to
   accounts ||--o{ account_holds : has
   loans ||--o{ amortization_schedules : schedules
-  accounts o|--o{ loans : disbursement_account
 
   users {
     uuid id PK
-    string email UK
+    varchar(320) email UK
+    varchar(120) display_name
+    text password_hash
+    boolean email_verified
+    boolean is_active
+    timestamptz created_at
+    timestamptz updated_at
+    boolean is_admin
   }
   customers {
     uuid id PK
     uuid user_id FK, UK
-    string rfc UK
-    string curp UK
-    string email UK
+    varchar(13) rfc UK
+    varchar(18) curp UK
+    varchar(100) first_name
+    varchar(100) last_name
+    varchar(100) second_last_name
+    varchar(255) email UK
+    varchar(20) phone
+    date date_of_birth
+    kyc_level kyc_level
+    timestamptz kyc_verified_at
+    text address_line
+    varchar(100) address_city
+    varchar(100) address_state
+    varchar(10) address_postal_code
+    varchar(3) address_country
+    varchar(20) privacy_notice_version
+    timestamptz privacy_notice_accepted_at
+    boolean pep_status
+    timestamptz sanctions_checked_at
+    bigint version
+    timestamptz created_at
+    timestamptz updated_at
   }
   accounts {
     uuid id PK
     uuid customer_id FK
-    string clabe UK
-    decimal balance
-    decimal held_amount
-    string status
+    varchar(18) account_number UK
+    varchar(18) clabe UK
+    varchar(30) account_type
+    char(3) currency
+    decimal(18,2) balance
+    decimal(18,2) held_amount
+    account_status status
+    timestamptz opened_at
+    timestamptz closed_at
+    bigint version
+    timestamptz created_at
+    timestamptz updated_at
   }
   account_holds {
     uuid id PK
     uuid account_id FK
-    decimal amount
+    decimal(18,2) amount
+    varchar(100) reason
     uuid reference_id
-    timestamp released_at
+    timestamptz placed_at
+    timestamptz released_at
+    timestamptz expires_at
   }
   loan_applications {
     uuid id PK
     uuid customer_id FK
-    decimal requested_amount
+    decimal(18,2) requested_amount
     int requested_term
-    string status
+    text purpose
+    application_status status
+    int credit_score
+    text decision_reason
+    timestamptz decided_at
+    bigint version
+    timestamptz created_at
+    timestamptz updated_at
   }
   loans {
     uuid id PK
+    varchar(30) loan_number UK
     uuid customer_id FK
     uuid disbursement_account_id FK
-    decimal principal_amount
-    decimal outstanding_principal
+    decimal(18,2) principal_amount
+    decimal(18,2) outstanding_principal
     int interest_rate_bps
-    string status
+    int term_months
+    char(3) currency
+    loan_status status
+    decimal(12,6) udi_value_at_origination
+    decimal(8,4) cat_average
+    timestamptz approved_at
+    timestamptz disbursed_at
+    date maturity_date
+    timestamptz paid_off_at
+    bigint version
+    timestamptz created_at
+    timestamptz updated_at
   }
   amortization_schedules {
     uuid id PK
     uuid loan_id FK
     int installment_number
     date due_date
-    decimal total_payment
+    decimal(18,2) principal_portion
+    decimal(18,2) interest_portion
+    decimal(18,2) total_payment
+    decimal(18,2) remaining_balance
+    timestamptz paid_at
+    decimal(18,2) paid_amount
+    bigint version
+    timestamptz created_at
   }
 
   classDef appNode fill:#D32F2F,stroke:#FFFFFF,color:#FFFFFF
@@ -500,41 +787,101 @@ erDiagram
   accounts {
     uuid id PK
     uuid customer_id FK
-    string clabe UK
-    string currency
-    string status
+    varchar(18) account_number UK
+    varchar(18) clabe UK
+    varchar(30) account_type
+    char(3) currency
+    decimal(18,2) balance
+    decimal(18,2) held_amount
+    account_status status
+    timestamptz opened_at
+    timestamptz closed_at
+    bigint version
+    timestamptz created_at
+    timestamptz updated_at
   }
   spei_transfers {
     uuid id PK
     uuid origin_account_id FK
-    string destination_clabe
-    decimal amount_mxn
-    string status
+    varchar(18) destination_clabe
+    varchar(200) destination_name
+    decimal(18,2) amount_mxn
+    char(3) currency
+    varchar(40) concept
+    varchar(40) reference
+    payment_rail rail
+    transfer_status status
+    varchar(50) spei_tracking_key
+    varchar(50) banxico_reference
+    decimal(12,6) udi_value_at_time
+    decimal(18,6) amount_udis
     uuid idempotency_key UK
+    timestamptz initiated_at
+    timestamptz completed_at
+    timestamptz failed_at
+    text failure_reason
+    uuid correlation_id
+    uuid device_id
   }
   codi_messages {
     uuid id PK
     uuid spei_transfer_id FK
-    string message_type
-    decimal amount_mxn
-    string status
+    varchar(20) message_type
+    text qr_payload
+    decimal(18,2) amount_mxn
+    decimal(18,6) amount_udis
+    decimal(12,6) udi_value
+    boolean from_push_notification
+    boolean beneficiary_data_editable
+    varchar(20) status
+    timestamptz expires_at
+    timestamptz created_at
   }
   customers {
     uuid id PK
-    string rfc UK
+    uuid user_id FK, UK
+    varchar(13) rfc UK
+    varchar(18) curp UK
+    varchar(100) first_name
+    varchar(100) last_name
+    varchar(100) second_last_name
+    varchar(255) email UK
+    varchar(20) phone
+    date date_of_birth
+    kyc_level kyc_level
+    timestamptz kyc_verified_at
+    text address_line
+    varchar(100) address_city
+    varchar(100) address_state
+    varchar(10) address_postal_code
+    varchar(3) address_country
+    varchar(20) privacy_notice_version
+    timestamptz privacy_notice_accepted_at
+    boolean pep_status
+    timestamptz sanctions_checked_at
+    bigint version
+    timestamptz created_at
+    timestamptz updated_at
   }
   dimo_registrations {
     uuid id PK
     uuid customer_id FK
     uuid account_id FK
-    string phone_number
-    string institution_code
+    varchar(10) phone_number
+    varchar(18) clabe
+    varchar(5) institution_code
+    boolean is_active
+    timestamptz registered_at
+    timestamptz deactivated_at
   }
   transfer_limits {
     uuid id PK
     uuid account_id FK
-    string period_type
-    decimal total_transferred
+    varchar(10) period_type
+    date period_start
+    decimal(18,2) total_transferred
+    int total_transfers
+    timestamptz last_transfer_at
   }
 
   classDef appNode fill:#D32F2F,stroke:#FFFFFF,color:#FFFFFF

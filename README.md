@@ -4,9 +4,9 @@
 
 Rust/Axum backend foundation for a Mexico-first mobile lending product. The
 running service provides health/version checks, self-service signup and
-session authentication, and consent notice/evidence routes. Customer accounts,
-loans, transfers, repayments, ledger posting, and live money movement are not
-implemented.
+session authentication, and the LFPDPPP consent registry (privacy notices and
+audit evidence). Customer accounts, loans, transfers, repayments, ledger
+posting, and live money movement are not implemented.
 
 Use these docs according to their scope:
 
@@ -88,15 +88,17 @@ All listed routes are registered in `src/main.rs`.
 | `POST` | `/api/v1/auth/logout` | Revoke the supplied token family |
 | `POST` | `/api/v1/auth/logout-all` | Revoke all sessions for the authenticated user |
 | `GET` | `/api/v1/me` | Return the authenticated user's profile projection |
-<!-- | `GET` | `/api/v1/consents/notices?locale=es-MX` | List published notices for a locale |
+| `GET` | `/api/v1/consents/notices?locale=es-MX` | List published notices for a locale |
 | `GET` | `/api/v1/me/consents` | Return the authenticated user's latest consent states |
-| `POST` | `/api/v1/consents` | Record a grant or withdrawal for a notice version | -->
+| `POST` | `/api/v1/consents` | Record a grant or withdrawal (Enforces LFPDPPP Express/Tacit rules) |
+| `POST` | `/api/v1/admin/consents/notices` | Publish a new immutable privacy notice (Admin RBAC only)|
 
 Protected routes require ``Authorization: Bearer <access_token>``. Self-service signup is implemented; email verification and password recovery are not. Signup currently creates users with email_verified = true for development convenience — the production flow must add a verification step before that column can meaningfully gate login. Account provisioning, KYC, and all financial workflows remain unimplemented.
 
-Consent notices are not seeded or auto-published. The notices route can return
-an empty list, and a grant cannot be recorded until an approved notice is
-published operationally. Consent evidence recorded through this API is not a legal determination that consent is the applicable lawful basis for any processing activity.
+### LFPDPPP Consent Registry
+The consent routes strictly enforce Article 7 of the LFPDPPP. Financial and KYC-related purposes require Express Consent (``consent_type: "express"``). The backend will reject ``tacit`` consent for high-risk purposes with a ``400 Bad Request``. Audit evidence (IP address, User-Agent) is captured automatically and immutably stored.
+
+The initial es-MX privacy and KYC notices are seeded automatically via migration.
 
 There are no account, loan-application, loan, payment, repayment, or transfer
 routes. Existing financial migrations are schema groundwork only. See
@@ -117,11 +119,11 @@ same LAN can reach it during development. Every other service binds to host
 loopback (127.0.0.1), which keeps the database, cache, and object store off
 the LAN. The loopback bindings are useful for direct inspection: 
 
-´´´powershell
+```powershell
 docker compose exec redis redis-cli KEYS "rho-studio-fintech:rate-limit:*"
 docker compose exec rustfs sh -c "ls -la /data"
 Start-Process "http://127.0.0.1:9001"
-´´´
+```
 Production must not mirror these bindings. See [Network boundaries](deployment-network.md) for the target topology.
 
 ## Configuration

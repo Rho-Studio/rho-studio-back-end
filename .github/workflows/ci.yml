@@ -2,7 +2,7 @@ name: CI Rust::FAPI::Rho.Studio®
 
 on:
   push:
-    branches: ["35-consent-test-suite"]
+    branches: ["44-prerelease-v002-privacy-notices-lifecycle"]
   pull_request:
     branches: [main , dev, release]
 
